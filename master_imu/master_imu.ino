@@ -19,7 +19,13 @@ const float ALPHA = 0.98f;
 float pitch = 0.0f, roll = 0.0f;
 unsigned long lastMicros = 0;
 
-const unsigned long SLAVE_TIMEOUT_US = 3000;  // plenty for a 10-byte reply
+// The pure serial round-trip is already ~1 ms at 115200 baud ('R' = 1 byte +
+// 10-byte reply = 11 bytes * ~87 us). A 3 ms budget left only ~2 ms of slack for
+// slave-side scheduling delay, and a single in-progress IMU read on the slave
+// (~1.5-2 ms) was enough to blow it -> dropped (0,0,0) samples. 8 ms still fits
+// comfortably inside one ~9.6 ms IMU sample period, so a late reply can't push the
+// master off its own 104 Hz cadence.
+const unsigned long SLAVE_TIMEOUT_US = 8000;
 
 void setup() {
   Serial.begin(115200);
