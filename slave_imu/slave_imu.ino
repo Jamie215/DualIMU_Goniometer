@@ -1,73 +1,63 @@
 /*
- * KNEE ANGLE - SLAVE (shank)  [UART, quaternion orientation]
+ * KNEE ANGLE - SLAVE (shank)  [UART, quaternion orientation, runtime config]
  * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270 + BMM150)
  *
- * Runs a Mahony filter and, on request, replies with its orientation quaternion.
- * The knee angle is computed on the PC from the RELATIVE rotation of the two
- * segments (see master_imu.ino), so how the board is strapped to the shank does
- * not matter as long as it's rigid.
+ * Runs a Mahony filter and answers the master over UART. The knee angle is
+ * computed on the PC from the RELATIVE rotation of the two segments (see
+ * master_imu.ino), so how the board is strapped to the shank does not matter.
  *
- * USE_MAG selects the fusion (keep it the SAME as the master):
- *   1 -> 9-DOF (accel + gyro + magnetometer): needs mag calibration below and is
- *        sensitive to nearby metal.
- *   0 -> 6-DOF (accel + gyro): robust, calibration-free, but yaw drifts.
+ * Magnetometer (9-DOF) is CONFIGURED AT RUNTIME via a config packet relayed by
+ * the master -- no reflashing to calibrate or to switch 6-DOF/9-DOF. Until a
+ * config with use_mag=1 arrives, the board runs 6-DOF (accel+gyro).
  *
- * Reply packet (18 bytes):
- *   [0] 0xAA header, [1..16] float q0..q3 (LE, w,x,y,z), [17] XOR checksum[1..16]
- * A fixed binary packet keeps the round-trip well under 1 ms, comfortably inside
- * the master's 8 ms poll budget.
+ * UART master<->slave (binary), one request byte:
+ *   'R' -> 18-byte quaternion packet [0xAA, q0..q3 (LE), xor of 1..16]
+ *   'r' -> 26-byte raw packet        [0xBB, ax,ay,az,mx,my,mz (LE), xor of 1..24]
+ *   'W' + 32-byte config payload:
+ *        [0]=use_mag, [1..12]=bias(3 floats), [13..24]=scale(3 floats),
+ *        [25..27]=perm(0..2), [28..30]=sign(0:+,1:-), [31]=xor of [0..30]
+ *        -> replies 0x06 (ACK) on good checksum, 0x15 (NAK) otherwise.
  *
  * Wiring: Slave TX(D1)->Master RX(D0), Slave RX(D0)<-Master TX(D1), GND<->GND.
  */
 
 #include "Arduino_BMI270_BMM150.h"
 
-#define USE_MAG 1   // 1 = 9-DOF (needs mag calibration below); 0 = 6-DOF
-
-// ---- Mahony filter state (see master_imu.ino for the derivation) ----------
+// ---- Mahony filter state --------------------------------------------------
 const float TWO_KP = 2.0f * 0.5f;
 const float TWO_KI = 2.0f * 0.0f;
 float integralFBx = 0.0f, integralFBy = 0.0f, integralFBz = 0.0f;
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;   // cached latest orientation
 unsigned long lastMicros = 0;
 
-#if USE_MAG
-// ---- magnetometer calibration (THIS board) --------------------------------
-// Fill from mag_calibrate.ino run on the SHANK board. Defaults == uncalibrated.
-const float MAG_BIAS[3]  = {0.0f, 0.0f, 0.0f};   // hard-iron offset, uT
-const float MAG_SCALE[3] = {1.0f, 1.0f, 1.0f};   // soft-iron scale
+// ---- runtime magnetometer config (set by relayed 'W'; 6-DOF until then) ---
+bool  useMagCfg   = false;
+float MAG_BIAS[3]  = {0.0f, 0.0f, 0.0f};
+float MAG_SCALE[3] = {1.0f, 1.0f, 1.0f};
+int   MAG_PERM[3]  = {0, 1, 2};
+int   MAG_SIGN[3]  = {1, 1, 1};
+float magX = 0.0f, magY = 0.0f, magZ = 0.0f;
 
-// The BMM150 and BMI270 do NOT share axes on this board. mag_calibrate.ino
-// measures the correct mapping and prints this function body; paste it in.
 inline void magToImuFrame(float &mx, float &my, float &mz) {
-  float in0 = mx, in1 = my, in2 = mz;
-  mx = in0;   // <- replace with the mapping printed by mag_calibrate.ino
-  my = in1;
-  mz = in2;
+  float in[3] = {mx, my, mz};
+  mx = MAG_SIGN[0] * in[MAG_PERM[0]];
+  my = MAG_SIGN[1] * in[MAG_PERM[1]];
+  mz = MAG_SIGN[2] * in[MAG_PERM[2]];
 }
 
 inline void calibrateMag(float &mx, float &my, float &mz) {
-  // Hard-/soft-iron correction in the RAW sensor frame, THEN remap to IMU frame.
   mx = (mx - MAG_BIAS[0]) * MAG_SCALE[0];
   my = (my - MAG_BIAS[1]) * MAG_SCALE[1];
   mz = (mz - MAG_BIAS[2]) * MAG_SCALE[2];
   magToImuFrame(mx, my, mz);
 }
 
-float magX = 0.0f, magY = 0.0f, magZ = 0.0f;
-#else
-float magX = 0.0f, magY = 0.0f, magZ = 0.0f;   // always 0 -> IMU-only
-#endif
-
 void seedFromAccel(float ax, float ay, float az) {
   float roll  = atan2(ay, az);
   float pitch = atan2(-ax, sqrt(ay * ay + az * az));
   float cr = cos(roll * 0.5f),  sr = sin(roll * 0.5f);
   float cp = cos(pitch * 0.5f), sp = sin(pitch * 0.5f);
-  q0 = cr * cp;
-  q1 = sr * cp;
-  q2 = cr * sp;
-  q3 = -sr * sp;
+  q0 = cr * cp; q1 = sr * cp; q2 = cr * sp; q3 = -sr * sp;
 }
 
 // Mahony AHRS update. Gyro in rad/s. Degrades to IMU-only when mag is (0,0,0).
@@ -117,9 +107,7 @@ void mahonyUpdate(float gx, float gy, float gz,
       integralFBz += TWO_KI * halfez * dt;
       gx += integralFBx; gy += integralFBy; gz += integralFBz;
     }
-    gx += TWO_KP * halfex;
-    gy += TWO_KP * halfey;
-    gz += TWO_KP * halfez;
+    gx += TWO_KP * halfex; gy += TWO_KP * halfey; gz += TWO_KP * halfez;
   }
 
   gx *= 0.5f * dt; gy *= 0.5f * dt; gz *= 0.5f * dt;
@@ -153,7 +141,7 @@ void setup() {
   }
 }
 
-inline void sendPacket() {
+inline void sendQuat() {
   uint8_t pkt[18];
   pkt[0] = 0xAA;
   memcpy(&pkt[1],  &q0, 4);
@@ -166,11 +154,49 @@ inline void sendPacket() {
   Serial1.write(pkt, 18);
 }
 
-inline void serviceRequest() {
-  if (Serial1.available()) {
-    char c = Serial1.read();
-    if (c == 'R') sendPacket();
+inline void sendRaw() {
+  float ax, ay, az, mx, my, mz;
+  IMU.readAcceleration(ax, ay, az);
+  IMU.readMagneticField(mx, my, mz);
+  uint8_t pkt[26];
+  pkt[0] = 0xBB;
+  memcpy(&pkt[1],  &ax, 4); memcpy(&pkt[5],  &ay, 4); memcpy(&pkt[9],  &az, 4);
+  memcpy(&pkt[13], &mx, 4); memcpy(&pkt[17], &my, 4); memcpy(&pkt[21], &mz, 4);
+  uint8_t cs = 0;
+  for (int i = 1; i <= 24; i++) cs ^= pkt[i];
+  pkt[25] = cs;
+  Serial1.write(pkt, 26);
+}
+
+inline void recvConfig() {
+  uint8_t pl[32];
+  int idx = 0;
+  unsigned long t0 = micros();
+  while (idx < 32 && (micros() - t0) < 50000) {
+    if (Serial1.available()) pl[idx++] = Serial1.read();
   }
+  if (idx < 32) return;                    // incomplete -> master times out (ERR,S)
+  uint8_t cs = 0;
+  for (int i = 0; i < 31; i++) cs ^= pl[i];
+  if (cs != pl[31]) { Serial1.write((uint8_t)0x15); return; }
+
+  useMagCfg = (pl[0] != 0);
+  memcpy(MAG_BIAS,  &pl[1],  12);
+  memcpy(MAG_SCALE, &pl[13], 12);
+  MAG_PERM[0] = pl[25]; MAG_PERM[1] = pl[26]; MAG_PERM[2] = pl[27];
+  MAG_SIGN[0] = pl[28] ? -1 : 1;
+  MAG_SIGN[1] = pl[29] ? -1 : 1;
+  MAG_SIGN[2] = pl[30] ? -1 : 1;
+  if (!useMagCfg) { magX = magY = magZ = 0.0f; }
+  Serial1.write((uint8_t)0x06);            // ACK
+}
+
+inline void serviceRequest() {
+  if (!Serial1.available()) return;
+  char c = Serial1.read();
+  if      (c == 'R') sendQuat();
+  else if (c == 'r') sendRaw();
+  else if (c == 'W') recvConfig();
 }
 
 void loop() {
@@ -180,18 +206,16 @@ void loop() {
     float ax, ay, az, gx, gy, gz;
     IMU.readAcceleration(ax, ay, az);
     serviceRequest();
-    IMU.readGyroscope(gx, gy, gz);      // deg/s
+    IMU.readGyroscope(gx, gy, gz);        // deg/s
     serviceRequest();
 
-#if USE_MAG
-    if (IMU.magneticFieldAvailable()) {
+    if (useMagCfg && IMU.magneticFieldAvailable()) {
       float mx, my, mz;
-      IMU.readMagneticField(mx, my, mz); // uT
+      IMU.readMagneticField(mx, my, mz);  // uT
       calibrateMag(mx, my, mz);
       magX = mx; magY = my; magZ = mz;
       serviceRequest();
     }
-#endif
 
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;
