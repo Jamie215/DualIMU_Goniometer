@@ -4,8 +4,9 @@
  *
  * Change vs previous: the reply is now a FIXED 10-BYTE BINARY packet instead of
  * formatted text. Text (Serial1.print of floats) was slow to generate and send,
- * pushing round-trip time near the master's 5 ms timeout and causing dropped
- * cycles. Raw bytes are small and fast -> round-trip should drop well under 1 ms.
+ * pushing round-trip time near the master's timeout and causing dropped cycles.
+ * Raw bytes are small and fast -> round-trip should drop well under 1 ms, well
+ * inside the master's current 8 ms slave-poll budget (see master_imu.ino).
  *
  * Reply packet (10 bytes):
  *   [0] 0xAA        header/sync byte

@@ -16,6 +16,12 @@ master's clock. It also handles invalid samples:
   - Data-quality stats (valid / filled / missing counts) are tracked and printed,
     and each logged row is flagged so nothing is hidden.
 
+The zero-offset (full-extension baseline) is captured by AVERAGING the shank-thigh
+pitch difference over the first ~2 s hold window, rather than trusting a single
+sample, so a lone noisy reading can't skew the whole calibration. The roll channels
+from both segments are logged alongside pitch for out-of-plane diagnostics (the knee
+angle itself is pitch-based).
+
 Master line format:
   D,<t_thigh_us>,<thigh_pitch>,<thigh_roll>,<t_shank_mid_us>,<shank_pitch>,<shank_roll>,<rtt_us>
 
@@ -37,6 +43,9 @@ except ImportError:
 # stop trusting the held value and mark the stretch as missing. At 104 Hz, 10
 # samples is ~100 ms.
 MAX_FILL = 10
+
+# How long to hold full extension while averaging the zero-offset baseline.
+CAL_SECONDS = 2.0
 
 
 def parse_line(line):
@@ -69,6 +78,17 @@ def is_valid(rec):
 
 def knee_angle(thigh_pitch, shank_pitch, zero_offset):
     return (shank_pitch - thigh_pitch) - zero_offset
+
+
+def compute_zero_offset(cal_samples):
+    """Mean shank-thigh pitch difference collected during the hold window.
+
+    Averaging over the whole window makes the full-extension baseline robust to
+    a single noisy sample. Returns 0.0 if no valid samples were captured (the
+    caller warns in that case)."""
+    if not cal_samples:
+        return 0.0
+    return sum(cal_samples) / len(cal_samples)
 
 
 class DropoutHandler:
@@ -132,6 +152,11 @@ def _self_test():
     assert abs(a - 55.0) < 1e-9
     print("  angle math OK")
 
+    assert compute_zero_offset([]) == 0.0
+    assert abs(compute_zero_offset([5.0, 5.0, 5.0]) - 5.0) < 1e-9
+    assert abs(compute_zero_offset([4.0, 6.0]) - 5.0) < 1e-9
+    print("  zero-offset averaging OK")
+
     print(f"  example summary line: {h.summary()}")
     print("Self-test PASSED.\n")
 
@@ -143,14 +168,17 @@ def run(port, out_path, baud=115200):
     ser = serial.Serial(port, baud, timeout=1)
     outfile = open(out_path, 'w', newline='')
     writer = csv.writer(outfile)
-    writer.writerow(['t_thigh_us', 'thigh_pitch', 'shank_pitch',
+    writer.writerow(['t_thigh_us', 'thigh_pitch', 'thigh_roll',
+                     'shank_pitch', 'shank_roll',
                      'knee_angle_deg', 'status', 'rtt_us'])
 
     handler = DropoutHandler()
     zero_offset = 0.0
     captured_zero = False
+    cal_samples = []
     start = time.time()
-    print("Collecting. Hold FULL EXTENSION ~2 s to set zero, then move. Ctrl-C to stop.")
+    print(f"Collecting. Hold FULL EXTENSION ~{CAL_SECONDS:.0f} s to set zero, "
+          "then move. Ctrl-C to stop.")
 
     try:
         while True:
@@ -161,10 +189,20 @@ def run(port, out_path, baud=115200):
 
             valid = is_valid(rec)
 
-            if valid and not captured_zero and time.time() - start > 2.0:
-                zero_offset = rec['shank_pitch'] - rec['thigh_pitch']
-                captured_zero = True
-                print(f"Zero captured: {zero_offset:.2f} deg")
+            # Average the shank-thigh difference over the hold window, then lock
+            # in the baseline once the window has elapsed.
+            if not captured_zero:
+                if valid:
+                    cal_samples.append(rec['shank_pitch'] - rec['thigh_pitch'])
+                if time.time() - start > CAL_SECONDS:
+                    zero_offset = compute_zero_offset(cal_samples)
+                    captured_zero = True
+                    if cal_samples:
+                        print(f"Zero captured: {zero_offset:.2f} deg "
+                              f"(mean of {len(cal_samples)} samples)")
+                    else:
+                        print("WARNING: no valid samples during hold; "
+                              "zero_offset=0.00 deg")
 
             angle = None
             if valid:
@@ -175,7 +213,9 @@ def run(port, out_path, baud=115200):
             writer.writerow([
                 rec['t_thigh'],
                 f"{rec['thigh_pitch']:.2f}",
+                f"{rec['thigh_roll']:.2f}",
                 f"{rec['shank_pitch']:.2f}" if valid else '',
+                f"{rec['shank_roll']:.2f}" if valid else '',
                 f"{out_angle:.2f}" if out_angle is not None else '',
                 status,
                 rec['rtt'],
