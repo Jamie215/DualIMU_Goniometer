@@ -1,32 +1,57 @@
 /*
  * KNEE ANGLE - SLAVE (shank)  [UART, quaternion orientation]
- * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270 + BMM150; mag unused)
+ * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270 + BMM150)
  *
- * Runs a 6-DOF Mahony filter (accel + gyro, no magnetometer) and, on request,
- * replies with its full orientation quaternion. The knee angle is computed on the
- * PC from the RELATIVE rotation of the two segments (see master_imu.ino), so how
- * the board is strapped to the shank does not matter as long as it's rigid.
+ * Runs a Mahony filter and, on request, replies with its orientation quaternion.
+ * The knee angle is computed on the PC from the RELATIVE rotation of the two
+ * segments (see master_imu.ino), so how the board is strapped to the shank does
+ * not matter as long as it's rigid.
+ *
+ * USE_MAG selects the fusion (keep it the SAME as the master):
+ *   1 -> 9-DOF (accel + gyro + magnetometer): needs mag calibration below and is
+ *        sensitive to nearby metal.
+ *   0 -> 6-DOF (accel + gyro): robust, calibration-free, but yaw drifts.
  *
  * Reply packet (18 bytes):
- *   [0]      0xAA         header/sync byte
- *   [1..16]  float q0..q3 (little-endian, w,x,y,z)
- *   [17]     checksum     XOR of bytes [1..16]
- *
- * The reply is a fixed binary packet (not formatted text) for speed: raw bytes
- * generate and send in well under 1 ms, comfortably inside the master's 8 ms
- * slave-poll budget (see master_imu.ino), so cycles are not dropped.
+ *   [0] 0xAA header, [1..16] float q0..q3 (LE, w,x,y,z), [17] XOR checksum[1..16]
+ * A fixed binary packet keeps the round-trip well under 1 ms, comfortably inside
+ * the master's 8 ms poll budget.
  *
  * Wiring: Slave TX(D1)->Master RX(D0), Slave RX(D0)<-Master TX(D1), GND<->GND.
  */
 
 #include "Arduino_BMI270_BMM150.h"
 
-// ---- Mahony 6-DOF filter state (see master_imu.ino for the derivation) ----
+#define USE_MAG 1   // 1 = 9-DOF (needs mag calibration below); 0 = 6-DOF
+
+// ---- Mahony filter state (see master_imu.ino for the derivation) ----------
 const float TWO_KP = 2.0f * 0.5f;
 const float TWO_KI = 2.0f * 0.0f;
 float integralFBx = 0.0f, integralFBy = 0.0f, integralFBz = 0.0f;
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;   // cached latest orientation
 unsigned long lastMicros = 0;
+
+#if USE_MAG
+// ---- magnetometer calibration (THIS board) --------------------------------
+// Fill from mag_calibrate.ino run on the SHANK board. Defaults == uncalibrated.
+const float MAG_BIAS[3]  = {0.0f, 0.0f, 0.0f};   // hard-iron offset, uT
+const float MAG_SCALE[3] = {1.0f, 1.0f, 1.0f};   // soft-iron scale
+
+inline void magToImuFrame(float &mx, float &my, float &mz) {
+  // e.g. if X/Y are swapped: float t = mx; mx = my; my = t;
+}
+
+inline void calibrateMag(float &mx, float &my, float &mz) {
+  magToImuFrame(mx, my, mz);
+  mx = (mx - MAG_BIAS[0]) * MAG_SCALE[0];
+  my = (my - MAG_BIAS[1]) * MAG_SCALE[1];
+  mz = (mz - MAG_BIAS[2]) * MAG_SCALE[2];
+}
+
+float magX = 0.0f, magY = 0.0f, magZ = 0.0f;
+#else
+float magX = 0.0f, magY = 0.0f, magZ = 0.0f;   // always 0 -> IMU-only
+#endif
 
 void seedFromAccel(float ax, float ay, float az) {
   float roll  = atan2(ay, az);
@@ -39,20 +64,46 @@ void seedFromAccel(float ax, float ay, float az) {
   q3 = -sr * sp;
 }
 
-// Mahony AHRS update, IMU-only (accel + gyro). Gyro in rad/s.
+// Mahony AHRS update. Gyro in rad/s. Degrades to IMU-only when mag is (0,0,0).
 void mahonyUpdate(float gx, float gy, float gz,
-                  float ax, float ay, float az, float dt) {
+                  float ax, float ay, float az,
+                  float mx, float my, float mz, float dt) {
+  float halfex = 0.0f, halfey = 0.0f, halfez = 0.0f;
+  bool useMag = !(mx == 0.0f && my == 0.0f && mz == 0.0f);
+
   if (!(ax == 0.0f && ay == 0.0f && az == 0.0f)) {
     float recipNorm = 1.0f / sqrt(ax * ax + ay * ay + az * az);
     ax *= recipNorm; ay *= recipNorm; az *= recipNorm;
 
-    float halfvx = q1 * q3 - q0 * q2;
-    float halfvy = q0 * q1 + q2 * q3;
-    float halfvz = q0 * q0 - 0.5f + q3 * q3;
+    float q0q0 = q0 * q0, q0q1 = q0 * q1, q0q2 = q0 * q2, q0q3 = q0 * q3;
+    float q1q1 = q1 * q1, q1q2 = q1 * q2, q1q3 = q1 * q3;
+    float q2q2 = q2 * q2, q2q3 = q2 * q3, q3q3 = q3 * q3;
 
-    float halfex = (ay * halfvz - az * halfvy);
-    float halfey = (az * halfvx - ax * halfvz);
-    float halfez = (ax * halfvy - ay * halfvx);
+    float halfvx = q1q3 - q0q2;
+    float halfvy = q0q1 + q2q3;
+    float halfvz = q0q0 - 0.5f + q3q3;
+
+    if (useMag) {
+      float recipMag = 1.0f / sqrt(mx * mx + my * my + mz * mz);
+      mx *= recipMag; my *= recipMag; mz *= recipMag;
+
+      float hx = 2.0f * (mx * (0.5f - q2q2 - q3q3) + my * (q1q2 - q0q3) + mz * (q1q3 + q0q2));
+      float hy = 2.0f * (mx * (q1q2 + q0q3) + my * (0.5f - q1q1 - q3q3) + mz * (q2q3 - q0q1));
+      float bx = sqrt(hx * hx + hy * hy);
+      float bz = 2.0f * (mx * (q1q3 - q0q2) + my * (q2q3 + q0q1) + mz * (0.5f - q1q1 - q2q2));
+
+      float halfwx = bx * (0.5f - q2q2 - q3q3) + bz * (q1q3 - q0q2);
+      float halfwy = bx * (q1q2 - q0q3) + bz * (q0q1 + q2q3);
+      float halfwz = bx * (q0q2 + q1q3) + bz * (0.5f - q1q1 - q2q2);
+
+      halfex = (my * halfwz - mz * halfwy);
+      halfey = (mz * halfwx - mx * halfwz);
+      halfez = (mx * halfwy - my * halfwx);
+    }
+
+    halfex += (ay * halfvz - az * halfvy);
+    halfey += (az * halfvx - ax * halfvz);
+    halfez += (ax * halfvy - ay * halfvx);
 
     if (TWO_KI > 0.0f) {
       integralFBx += TWO_KI * halfex * dt;
@@ -87,7 +138,6 @@ void setup() {
 
   lastMicros = micros();
 
-  // Seed from accelerometer.
   unsigned long t0 = millis();
   while (!IMU.accelerationAvailable() && millis() - t0 < 2000) { ; }
   if (IMU.accelerationAvailable()) {
@@ -127,13 +177,23 @@ void loop() {
     IMU.readGyroscope(gx, gy, gz);      // deg/s
     serviceRequest();
 
+#if USE_MAG
+    if (IMU.magneticFieldAvailable()) {
+      float mx, my, mz;
+      IMU.readMagneticField(mx, my, mz); // uT
+      calibrateMag(mx, my, mz);
+      magX = mx; magY = my; magZ = mz;
+      serviceRequest();
+    }
+#endif
+
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;
     lastMicros = now;
     if (dt <= 0 || dt > 0.5f) dt = 1.0f / 104.0f;
 
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD,
-                 ax, ay, az, dt);
+                 ax, ay, az, magX, magY, magZ, dt);
   }
 
   serviceRequest();

@@ -1,22 +1,24 @@
 /*
  * KNEE ANGLE - MASTER (thigh)  [UART, quaternion orientation]
- * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270 + BMM150; mag unused)
+ * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270 + BMM150)
  *
- * Each segment runs a 6-DOF Mahony filter (accel + gyro, no magnetometer) and
- * reports its full orientation as a unit quaternion (w,x,y,z). The knee angle is
- * derived on the PC from the RELATIVE rotation between the two segments, which is
- * why arbitrary sensor placement is tolerated: any constant sensor-to-segment
- * misalignment cancels in the relative delta (a similarity transform preserves the
- * rotation angle). See knee_collector_uart.py.
+ * Each segment runs a Mahony filter and reports its orientation as a unit
+ * quaternion (w,x,y,z). The knee angle is derived on the PC from the RELATIVE
+ * rotation between the two segments, so arbitrary sensor placement is tolerated
+ * (a constant sensor-to-segment misalignment cancels in the relative delta).
+ * See knee_collector_uart.py.
  *
- * The master reads a FIXED 18-byte binary packet from the slave:
- *   [0]      0xAA         header/sync
- *   [1..16]  float q0..q3 (little-endian, w,x,y,z)
- *   [17]     checksum     XOR of bytes [1..16]
- * Reading a known-size packet is fast and unambiguous. The slave sample is
- * bracketed at (T_req + T_resp) / 2.
+ * USE_MAG selects the fusion:
+ *   1 -> 9-DOF (accel + gyro + magnetometer): absolute heading, no yaw drift,
+ *        BUT the magnetometer MUST be calibrated (see mag_calibrate.ino) and is
+ *        sensitive to nearby metal (braces, treadmills, rebar floors).
+ *   0 -> 6-DOF (accel + gyro): robust and calibration-free, but yaw drifts.
+ * Flip this and reflash to A/B test which is better in your environment.
  *
- * PC line (text, for the collector):
+ * Slave reply packet (18 bytes):
+ *   [0] 0xAA header, [1..16] float q0..q3 (LE, w,x,y,z), [17] XOR checksum[1..16]
+ *
+ * PC line (text):
  *   D,<t_thigh_us>,<tw>,<tx>,<ty>,<tz>,<t_shank_mid_us>,<sw>,<sx>,<sy>,<sz>,<rtt_us>
  * On a bad/missing reply, the shank quaternion and midpoint are 0.
  *
@@ -25,24 +27,48 @@
 
 #include "Arduino_BMI270_BMM150.h"
 
-// ---- Mahony 6-DOF filter state -------------------------------------------
+#define USE_MAG 1   // 1 = 9-DOF (needs mag calibration below); 0 = 6-DOF
+
+// ---- Mahony filter state --------------------------------------------------
 // Kp trades convergence speed for noise rejection; Ki slowly corrects gyro bias.
-// Ki is left at 0 for predictable behavior on a device that re-zeros statically.
 const float TWO_KP = 2.0f * 0.5f;
 const float TWO_KI = 2.0f * 0.0f;
 float integralFBx = 0.0f, integralFBy = 0.0f, integralFBz = 0.0f;
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
 unsigned long lastMicros = 0;
 
-// The pure serial round-trip is ~165 us at 115200 baud ('R' = 1 byte + 18-byte
-// reply = 19 bytes * ~87 us). 8 ms leaves comfortable slack for slave-side
-// scheduling delay (a single in-progress IMU read is ~1.5-2 ms) and still fits
-// inside one ~9.6 ms IMU sample period, so a late reply can't push the master off
-// its own 104 Hz cadence.
+#if USE_MAG
+// ---- magnetometer calibration (THIS board) --------------------------------
+// Fill from mag_calibrate.ino. Defaults are pass-through == uncalibrated ==
+// meaningless heading, so calibrate before trusting 9-DOF.
+const float MAG_BIAS[3]  = {0.0f, 0.0f, 0.0f};   // hard-iron offset, uT
+const float MAG_SCALE[3] = {1.0f, 1.0f, 1.0f};   // soft-iron scale
+
+// The BMM150 and BMI270 do not necessarily share axes. Rotate the raw mag sample
+// into the accel/gyro frame here; verify with mag_calibrate.ino. Identity default.
+inline void magToImuFrame(float &mx, float &my, float &mz) {
+  // e.g. if X/Y are swapped: float t = mx; mx = my; my = t;
+}
+
+inline void calibrateMag(float &mx, float &my, float &mz) {
+  magToImuFrame(mx, my, mz);
+  mx = (mx - MAG_BIAS[0]) * MAG_SCALE[0];
+  my = (my - MAG_BIAS[1]) * MAG_SCALE[1];
+  mz = (mz - MAG_BIAS[2]) * MAG_SCALE[2];
+}
+
+float magX = 0.0f, magY = 0.0f, magZ = 0.0f;   // latest calibrated mag
+#else
+float magX = 0.0f, magY = 0.0f, magZ = 0.0f;   // always 0 -> IMU-only
+#endif
+
+// The pure serial round-trip is ~165 us at 115200 baud ('R' + 18-byte reply).
+// 8 ms leaves slack for slave-side scheduling and still fits inside one ~9.6 ms
+// IMU sample period, so a late reply can't push the master off its 104 Hz cadence.
 const unsigned long SLAVE_TIMEOUT_US = 8000;
 
-// Seed the quaternion from gravity (roll/pitch from accel, yaw = 0) so the filter
-// starts near the true attitude instead of converging from identity.
+// Seed the quaternion from gravity (roll/pitch from accel, yaw = 0). With the
+// magnetometer on, the filter pulls yaw to magnetic heading within a second.
 void seedFromAccel(float ax, float ay, float az) {
   float roll  = atan2(ay, az);
   float pitch = atan2(-ax, sqrt(ay * ay + az * az));
@@ -54,23 +80,51 @@ void seedFromAccel(float ax, float ay, float az) {
   q3 = -sr * sp;
 }
 
-// Mahony AHRS update, IMU-only (accel + gyro). Gyro in rad/s.
+// Mahony AHRS update. Gyro in rad/s. If mag is (0,0,0) it degrades to IMU-only,
+// so the same call works whether or not USE_MAG / a mag sample is available.
 void mahonyUpdate(float gx, float gy, float gz,
-                  float ax, float ay, float az, float dt) {
-  // Use accel only when it's a usable vector (not free-fall / clipped to 0).
+                  float ax, float ay, float az,
+                  float mx, float my, float mz, float dt) {
+  float halfex = 0.0f, halfey = 0.0f, halfez = 0.0f;
+  bool useMag = !(mx == 0.0f && my == 0.0f && mz == 0.0f);
+
   if (!(ax == 0.0f && ay == 0.0f && az == 0.0f)) {
     float recipNorm = 1.0f / sqrt(ax * ax + ay * ay + az * az);
     ax *= recipNorm; ay *= recipNorm; az *= recipNorm;
 
-    // Estimated direction of gravity from the current quaternion (half-vectors).
-    float halfvx = q1 * q3 - q0 * q2;
-    float halfvy = q0 * q1 + q2 * q3;
-    float halfvz = q0 * q0 - 0.5f + q3 * q3;
+    float q0q0 = q0 * q0, q0q1 = q0 * q1, q0q2 = q0 * q2, q0q3 = q0 * q3;
+    float q1q1 = q1 * q1, q1q2 = q1 * q2, q1q3 = q1 * q3;
+    float q2q2 = q2 * q2, q2q3 = q2 * q3, q3q3 = q3 * q3;
 
-    // Error = cross(measured gravity, estimated gravity).
-    float halfex = (ay * halfvz - az * halfvy);
-    float halfey = (az * halfvx - ax * halfvz);
-    float halfez = (ax * halfvy - ay * halfvx);
+    // Estimated direction of gravity (half-vector).
+    float halfvx = q1q3 - q0q2;
+    float halfvy = q0q1 + q2q3;
+    float halfvz = q0q0 - 0.5f + q3q3;
+
+    if (useMag) {
+      float recipMag = 1.0f / sqrt(mx * mx + my * my + mz * mz);
+      mx *= recipMag; my *= recipMag; mz *= recipMag;
+
+      // Reference direction of Earth's magnetic field.
+      float hx = 2.0f * (mx * (0.5f - q2q2 - q3q3) + my * (q1q2 - q0q3) + mz * (q1q3 + q0q2));
+      float hy = 2.0f * (mx * (q1q2 + q0q3) + my * (0.5f - q1q1 - q3q3) + mz * (q2q3 - q0q1));
+      float bx = sqrt(hx * hx + hy * hy);
+      float bz = 2.0f * (mx * (q1q3 - q0q2) + my * (q2q3 + q0q1) + mz * (0.5f - q1q1 - q2q2));
+
+      // Estimated direction of the magnetic field (half-vector).
+      float halfwx = bx * (0.5f - q2q2 - q3q3) + bz * (q1q3 - q0q2);
+      float halfwy = bx * (q1q2 - q0q3) + bz * (q0q1 + q2q3);
+      float halfwz = bx * (q0q2 + q1q3) + bz * (0.5f - q1q1 - q2q2);
+
+      halfex = (my * halfwz - mz * halfwy);
+      halfey = (mz * halfwx - mx * halfwz);
+      halfez = (mx * halfwy - my * halfwx);
+    }
+
+    // Add the gravity error term (cross of measured and estimated gravity).
+    halfex += (ay * halfvz - az * halfvy);
+    halfey += (az * halfvx - ax * halfvz);
+    halfez += (ax * halfvy - ay * halfvx);
 
     if (TWO_KI > 0.0f) {
       integralFBx += TWO_KI * halfex * dt;
@@ -123,7 +177,6 @@ unsigned long pollSlave(float q[4], unsigned long &rtt) {
   unsigned long tReq = micros();
   Serial1.write('R');
 
-  // Read exactly 18 bytes with timeout.
   uint8_t pkt[18];
   int idx = 0;
   while (idx < 18 && (micros() - tReq) < SLAVE_TIMEOUT_US) {
@@ -148,13 +201,22 @@ void loop() {
     IMU.readAcceleration(ax, ay, az);
     IMU.readGyroscope(gx, gy, gz);      // deg/s
 
+#if USE_MAG
+    if (IMU.magneticFieldAvailable()) {
+      float mx, my, mz;
+      IMU.readMagneticField(mx, my, mz); // uT
+      calibrateMag(mx, my, mz);
+      magX = mx; magY = my; magZ = mz;   // cache; used every filter tick
+    }
+#endif
+
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;
     lastMicros = now;
     if (dt <= 0 || dt > 0.5f) dt = 1.0f / 104.0f;
 
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD,
-                 ax, ay, az, dt);
+                 ax, ay, az, magX, magY, magZ, dt);
 
     float sq[4] = {0, 0, 0, 0};
     unsigned long rtt = 0;
