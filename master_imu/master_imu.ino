@@ -44,17 +44,23 @@ unsigned long lastMicros = 0;
 const float MAG_BIAS[3]  = {0.0f, 0.0f, 0.0f};   // hard-iron offset, uT
 const float MAG_SCALE[3] = {1.0f, 1.0f, 1.0f};   // soft-iron scale
 
-// The BMM150 and BMI270 do not necessarily share axes. Rotate the raw mag sample
-// into the accel/gyro frame here; verify with mag_calibrate.ino. Identity default.
+// The BMM150 and BMI270 do NOT share axes on this board. Rotate the raw mag
+// sample into the accel/gyro frame here. mag_calibrate.ino measures the correct
+// mapping and prints this function body; paste it in. Identity is a placeholder.
 inline void magToImuFrame(float &mx, float &my, float &mz) {
-  // e.g. if X/Y are swapped: float t = mx; mx = my; my = t;
+  float in0 = mx, in1 = my, in2 = mz;
+  mx = in0;   // <- replace with the mapping printed by mag_calibrate.ino
+  my = in1;
+  mz = in2;
 }
 
 inline void calibrateMag(float &mx, float &my, float &mz) {
-  magToImuFrame(mx, my, mz);
+  // Hard-/soft-iron correction is in the RAW sensor frame (that's how MAG_BIAS/
+  // MAG_SCALE were measured), THEN remap into the IMU frame.
   mx = (mx - MAG_BIAS[0]) * MAG_SCALE[0];
   my = (my - MAG_BIAS[1]) * MAG_SCALE[1];
   mz = (mz - MAG_BIAS[2]) * MAG_SCALE[2];
+  magToImuFrame(mx, my, mz);
 }
 
 float magX = 0.0f, magY = 0.0f, magZ = 0.0f;   // latest calibrated mag
