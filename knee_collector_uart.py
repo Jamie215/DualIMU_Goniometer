@@ -332,12 +332,67 @@ def _self_test():
     print("Self-test PASSED.\n")
 
 
+def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
+    """Block until the master is sending healthy, parseable, VALID D lines.
+
+    This is what stops the collector from silently sitting at 'zeroing' forever:
+    the calibration timer only advances on parseable lines, so if the firmware,
+    the format, or the slave link is wrong we'd otherwise hang with no clue. Here
+    we watch the raw stream and, every few seconds, say exactly what's wrong:
+    no bytes at all, bytes that don't parse (wrong/old firmware), or D lines whose
+    shank quaternion is always zero (slave link down)."""
+    ser.reset_input_buffer()   # drop stale buffered bytes so timing starts clean
+    seen = parsed = valid = 0
+    last_line = ''
+    last_warn = time.time()
+    while valid < need_valid:
+        line = ser.readline().decode('ascii', 'ignore').strip()
+        if line:
+            seen += 1
+            last_line = line
+            rec = parse_line(line)
+            if rec is not None:
+                parsed += 1
+                if is_valid(rec):
+                    valid += 1
+
+        if time.time() - last_warn >= warn_every and valid < need_valid:
+            if seen == 0:
+                print(f"  ...no data on {port}. Is the master board plugged in and "
+                      f"running? (run with --raw to inspect the raw stream)")
+            elif parsed == 0:
+                n = len(last_line.split(','))
+                print(f"  ...receiving data, but it isn't a 12-field 'D' line "
+                      f"(last line had {n} fields). Reflash BOTH boards with the "
+                      f"quaternion firmware. Last line: {last_line!r}")
+            else:
+                print("  ...master is streaming, but every shank quaternion is the "
+                      "zero sentinel -> the slave isn't replying. Check the UART "
+                      "wiring/GND between the two boards and that the slave is powered.")
+            last_warn = time.time()
+    print("Data OK.")
+
+
 def run(port, out_path, baud=115200,
-        cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS):
+        cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS, raw=False):
     if serial is None:
         raise RuntimeError("pyserial not installed. pip install pyserial")
 
     ser = serial.Serial(port, baud, timeout=1)
+
+    if raw:
+        print(f"RAW mode: dumping serial lines from {port}. Ctrl-C to stop.")
+        try:
+            while True:
+                line = ser.readline().decode('ascii', 'ignore').rstrip()
+                if line:
+                    print(f"[{len(line.split(','))} fields] {line!r}")
+        except KeyboardInterrupt:
+            print("\nStopping.")
+        finally:
+            ser.close()
+        return
+
     outfile = open(out_path, 'w', newline='')
     writer = csv.writer(outfile)
     writer.writerow(['t_thigh_us',
@@ -355,8 +410,14 @@ def run(port, out_path, baud=115200,
 
     t_zero_end = cal_seconds
     t_sweep_end = cal_seconds + sweep_seconds
+
+    # Don't start the calibration clock until real data is flowing, otherwise the
+    # zero window can elapse before the user is ready (or hang invisibly on a bad
+    # link). wait_for_stream diagnoses no-data / wrong-firmware / dead-slave.
+    print(f"Waiting for data on {port} ...")
+    wait_for_stream(ser, port)
     start = time.time()
-    print(f"Collecting. Hold FULL EXTENSION ~{cal_seconds:.0f} s (zeroing)...")
+    print(f"Hold FULL EXTENSION ~{cal_seconds:.0f} s (zeroing)...")
 
     try:
         while True:
@@ -447,6 +508,9 @@ if __name__ == '__main__':
                     help='full-extension hold time for zeroing')
     ap.add_argument('--sweep-seconds', type=float, default=SWEEP_SECONDS,
                     help='flexion-sweep time for learning the flexion axis')
+    ap.add_argument('--raw', action='store_true',
+                    help='dump raw serial lines (with field count) and exit; '
+                         'use this to check the master output format')
     ap.add_argument('--selftest', action='store_true')
     args = ap.parse_args()
 
@@ -455,5 +519,5 @@ if __name__ == '__main__':
         if not args.selftest:
             print("Provide --port to collect live data.")
     else:
-        run(args.port, args.out,
+        run(args.port, args.out, raw=args.raw,
             cal_seconds=args.cal_seconds, sweep_seconds=args.sweep_seconds)
