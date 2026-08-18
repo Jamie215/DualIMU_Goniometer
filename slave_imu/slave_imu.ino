@@ -23,6 +23,10 @@ unsigned long lastMicros = 0;
 float gyroBias[3] = {0.0f, 0.0f, 0.0f};
 const float BIAS_SANITY_DPS = 3.0f;
 
+// Trust the accelerometer as gravity only when |accel| is near 1 g (reject
+// linear acceleration during fast motion; the gyro carries through).
+const float ACC_GATE_G = 0.15f;
+
 // Arduino_BMI270_BMM150 returns a REFLECTED (left-handed) frame; negate x of
 // accel AND gyro to restore a right-handed frame for the quaternion filter.
 inline void readAccel(float &ax, float &ay, float &az) {
@@ -63,8 +67,9 @@ void seedFromAccel(float ax, float ay, float az) {
 
 void mahonyUpdate(float gx, float gy, float gz,
                   float ax, float ay, float az, float dt) {
-  if (!(ax == 0.0f && ay == 0.0f && az == 0.0f)) {
-    float recipNorm = 1.0f / sqrt(ax * ax + ay * ay + az * az);
+  float amag = sqrt(ax * ax + ay * ay + az * az);
+  if (amag > 1e-6f && fabs(amag - 1.0f) < ACC_GATE_G) {
+    float recipNorm = 1.0f / amag;
     ax *= recipNorm; ay *= recipNorm; az *= recipNorm;
 
     float halfvx = q1 * q3 - q0 * q2;
@@ -96,7 +101,7 @@ void mahonyUpdate(float gx, float gy, float gz,
 }
 
 void setup() {
-  Serial1.begin(115200);
+  Serial1.begin(460800);        // fast board-to-board link (must match master)
 
   if (!IMU.begin()) {
     pinMode(LED_BUILTIN, OUTPUT);
