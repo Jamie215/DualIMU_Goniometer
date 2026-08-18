@@ -189,12 +189,24 @@ bool sendConfigToSlave(int um, float *b, float *sc, int *pm, int *sg) {
   for (int i = 0; i < 31; i++) cs ^= pl[i];
   pl[31] = cs;
 
-  while (Serial1.available()) Serial1.read();
-  Serial1.write('W');
-  Serial1.write(pl, 32);
-  unsigned long t0 = micros();
-  while (micros() - t0 < 50000) {
-    if (Serial1.available()) return Serial1.read() == 0x06;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    // Quiet-flush: drain the link until it's been silent for ~3 ms, so an
+    // in-flight reply to a prior 'R' poll can't be mistaken for the ACK.
+    unsigned long quiet = micros();
+    while (micros() - quiet < 3000) {
+      if (Serial1.available()) { Serial1.read(); quiet = micros(); }
+    }
+    Serial1.write('W');
+    Serial1.write(pl, 32);
+    // Wait specifically for ACK (0x06) or NAK (0x15); ignore stray bytes.
+    unsigned long t0 = micros();
+    while (micros() - t0 < 200000) {
+      if (Serial1.available()) {
+        uint8_t r = Serial1.read();
+        if (r == 0x06) return true;
+        if (r == 0x15) break;          // NAK -> retry
+      }
+    }
   }
   return false;
 }
@@ -287,10 +299,13 @@ void loop() {
   handleUsbCommands();
 
   if (mode == STREAM_M) {                 // raw self accel+mag for calibration
-    if (IMU.accelerationAvailable()) {
+    // Gate on the SLOW magnetometer and read accel at the same instant, so the
+    // pair is simultaneous. Gating on accel instead pairs fresh accel with STALE
+    // mag, which breaks the accel.mag invariant the axis solver relies on.
+    if (IMU.magneticFieldAvailable()) {
       float ax, ay, az, mx, my, mz;
-      IMU.readAcceleration(ax, ay, az);
       IMU.readMagneticField(mx, my, mz);
+      IMU.readAcceleration(ax, ay, az);
       printVec6("RM,", ax, ay, az, mx, my, mz);
     }
     return;

@@ -38,6 +38,12 @@ int   MAG_PERM[3]  = {0, 1, 2};
 int   MAG_SIGN[3]  = {1, 1, 1};
 float magX = 0.0f, magY = 0.0f, magZ = 0.0f;
 
+// Latest RAW accel+mag captured together at magnetometer rate, for the PC's
+// calibration ('r' poll). Paired at the same instant so accel.mag stays a valid
+// invariant for the axis solver. rawReady stays false until the first mag read.
+float rawAx = 0, rawAy = 0, rawAz = 0, rawMx = 0, rawMy = 0, rawMz = 0;
+bool  rawReady = false;
+
 inline void magToImuFrame(float &mx, float &my, float &mz) {
   float in[3] = {mx, my, mz};
   mx = MAG_SIGN[0] * in[MAG_PERM[0]];
@@ -155,13 +161,11 @@ inline void sendQuat() {
 }
 
 inline void sendRaw() {
-  float ax, ay, az, mx, my, mz;
-  IMU.readAcceleration(ax, ay, az);
-  IMU.readMagneticField(mx, my, mz);
+  if (!rawReady) return;   // no paired sample yet; master skips this poll
   uint8_t pkt[26];
   pkt[0] = 0xBB;
-  memcpy(&pkt[1],  &ax, 4); memcpy(&pkt[5],  &ay, 4); memcpy(&pkt[9],  &az, 4);
-  memcpy(&pkt[13], &mx, 4); memcpy(&pkt[17], &my, 4); memcpy(&pkt[21], &mz, 4);
+  memcpy(&pkt[1],  &rawAx, 4); memcpy(&pkt[5],  &rawAy, 4); memcpy(&pkt[9],  &rawAz, 4);
+  memcpy(&pkt[13], &rawMx, 4); memcpy(&pkt[17], &rawMy, 4); memcpy(&pkt[21], &rawMz, 4);
   uint8_t cs = 0;
   for (int i = 1; i <= 24; i++) cs ^= pkt[i];
   pkt[25] = cs;
@@ -209,11 +213,17 @@ void loop() {
     IMU.readGyroscope(gx, gy, gz);        // deg/s
     serviceRequest();
 
-    if (useMagCfg && IMU.magneticFieldAvailable()) {
-      float mx, my, mz;
-      IMU.readMagneticField(mx, my, mz);  // uT
-      calibrateMag(mx, my, mz);
-      magX = mx; magY = my; magZ = mz;
+    // When a fresh mag sample is ready, cache it paired with THIS accel (for the
+    // PC's 'r' calibration poll), and, if configured, feed it into the filter.
+    if (IMU.magneticFieldAvailable()) {
+      IMU.readMagneticField(rawMx, rawMy, rawMz);  // uT, raw
+      rawAx = ax; rawAy = ay; rawAz = az;
+      rawReady = true;
+      if (useMagCfg) {
+        float mx = rawMx, my = rawMy, mz = rawMz;
+        calibrateMag(mx, my, mz);
+        magX = mx; magY = my; magZ = mz;
+      }
       serviceRequest();
     }
 
