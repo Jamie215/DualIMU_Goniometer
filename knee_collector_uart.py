@@ -31,8 +31,20 @@ Dropout handling is unchanged from the pitch-based version:
   - Data-quality stats are tracked and each row is flagged so nothing is hidden.
 
 Fusion is 6-DOF (accel + gyro), no magnetometer -- calibration-free and robust
-to nearby metal. Yaw can drift slowly, but the relative delta-angle is largely
-immune to it, and the static zero re-references each session.
+to nearby metal.
+
+Two angle methods (--method):
+  gravity (default) -- each segment is a DRIFT-FREE sagittal inclinometer built
+    from the gravity direction in its own frame (immune to 6-DOF yaw drift, to
+    constant mounting, and to board rotation about the leg's long axis). The knee
+    is the difference of the two inclinations. Best for upright sagittal flexion;
+    it measures the sagittal-plane component of the angle.
+  quat -- relative-quaternion swing-twist about a learned flexion axis. General
+    (any plane) but partly exposed to yaw drift in 6-DOF.
+
+Calibration (both methods): stand STRAIGHT and still to zero, then do a few slow
+reps that bend BOTH knee and hip (sit-to-stands / marching) so each segment tilts
+enough to learn its axis. A segment that stays still just contributes ~0.
 
 Master line format (12 fields):
   D,<t_thigh_us>,<tw>,<tx>,<ty>,<tz>,<t_shank_mid_us>,<sw>,<sx>,<sy>,<sz>,<rtt_us>
@@ -191,6 +203,84 @@ def relative_quaternion(thigh_q, shank_q):
 
 
 # --------------------------------------------------------------------------- #
+# Gravity-referenced (heading-immune) angle.
+#
+# In 6-DOF, gravity pins each board's tilt but not its heading, so the relative
+# quaternion carries yaw drift. The gravity DIRECTION in each board's own frame
+# is drift-free (invariant to yaw about vertical). We turn each segment into a
+# drift-free sagittal inclinometer and take the difference:
+#   d_i  = gravity-in-board at the zero pose (the segment's long axis)
+#   f_i  = "anterior" in-plane direction, learned from the calibration motion
+#   incl_i = atan2(g.f_i, g.d_i)            (signed tilt in the sagittal plane)
+#   knee  = incl_thigh - incl_shank
+# This cancels constant mounting (angles between board-frame vectors), position,
+# and heading drift. It measures the sagittal-plane component -- ideal for
+# upright knee flexion. Validated against random mounts + yaw drift.
+# --------------------------------------------------------------------------- #
+def gravity_in_board(q):
+    """Unit gravity direction expressed in the board's own frame (world up
+    rotated by the inverse orientation). Drift-free: invariant to yaw."""
+    qc = q_conj(q_normalize(q))
+    r = q_mul(q_mul(qc, (0.0, 0.0, 0.0, 1.0)), q_conj(qc))
+    return _normalize3((r[1], r[2], r[3]))
+
+
+def _perp(g, d):
+    gd = _dot3(g, d)
+    return (g[0] - gd * d[0], g[1] - gd * d[1], g[2] - gd * d[2])
+
+
+def estimate_forward(g_list, d, min_tilt_deg=SWEEP_MIN_ANGLE_DEG):
+    """Learn the segment's in-plane 'anterior' direction from the tilt it shows
+    during the calibration motion: the (perpendicular-to-d) component of gravity,
+    sign-aligned and summed. Returns a unit vector, or None if the segment barely
+    moved (then that segment contributes ~0 to the angle anyway)."""
+    ref = None
+    acc = [0.0, 0.0, 0.0]
+    n = 0
+    thr = math.sin(math.radians(min_tilt_deg))
+    for g in g_list:
+        r = _perp(g, d)
+        rn = _norm3(r)
+        if rn < thr:
+            continue
+        u = (r[0] / rn, r[1] / rn, r[2] / rn)
+        if ref is None:
+            ref = u
+        s = 1.0 if _dot3(u, ref) >= 0.0 else -1.0
+        acc[0] += s * r[0]; acc[1] += s * r[1]; acc[2] += s * r[2]
+        n += 1
+    if n == 0:
+        return None
+    return _normalize3(tuple(acc))
+
+
+def sagittal_inclination(g, d, f):
+    """Signed tilt (deg) of gravity g from the zero direction d, in the (d,f)
+    plane. If f is None the segment is treated as still (0)."""
+    if f is None:
+        return 0.0
+    return math.degrees(math.atan2(_dot3(g, f), _dot3(g, d)))
+
+
+def gravity_knee_angle(thigh_q, shank_q, d_thigh, f_thigh, d_shank, f_shank):
+    gt = gravity_in_board(thigh_q)
+    gs = gravity_in_board(shank_q)
+    return (sagittal_inclination(gt, d_thigh, f_thigh)
+            - sagittal_inclination(gs, d_shank, f_shank))
+
+
+def average_gravity(g_list):
+    """Mean gravity-in-board direction over a still window, normalized."""
+    if not g_list:
+        return None
+    acc = [0.0, 0.0, 0.0]
+    for g in g_list:
+        acc[0] += g[0]; acc[1] += g[1]; acc[2] += g[2]
+    return _normalize3(tuple(acc))
+
+
+# --------------------------------------------------------------------------- #
 # Serial line parsing / validity
 # --------------------------------------------------------------------------- #
 def parse_line(line):
@@ -333,6 +423,28 @@ def _self_test():
     assert abs(a - 30.0) < 1e-6
     print("  end-to-end angle math OK")
 
+    # --- gravity-referenced angle: recover true knee despite mounts + heading ---
+    def _bq(psi, p, B):   # board->world: Rz(psi) . Ry(p) . B
+        return q_mul(q_from_axis_angle((0, 0, 1), psi),
+                     q_mul(q_from_axis_angle((0, 1, 0), p), B))
+    B_t = q_from_axis_angle((0.4, -0.6, 0.7), math.radians(50))   # arbitrary mounts
+    B_s = q_from_axis_angle((-0.3, 0.8, 0.2), math.radians(80))
+    psi = 1.1                                                      # shared heading
+    # calibration: both segments tilt forward
+    gt0 = [gravity_in_board(_bq(psi, math.radians(a), B_t)) for a in range(0, 46, 3)]
+    gs0 = [gravity_in_board(_bq(psi, math.radians(a), B_s)) for a in range(0, 46, 3)]
+    d_t = average_gravity([gt0[0]]); d_s = average_gravity([gs0[0]])
+    f_t = estimate_forward(gt0, d_t); f_s = estimate_forward(gs0, d_s)
+    assert f_t is not None and f_s is not None
+    for pth, psh in ((10, 40), (55, 15), (0, 0), (30, 70)):
+        qt = _bq(psi, math.radians(pth), B_t)
+        qs = _bq(psi, math.radians(psh), B_s)
+        knee = gravity_knee_angle(qt, qs, d_t, f_t, d_s, f_s)
+        assert abs(knee - (pth - psh)) < 1e-6, (pth, psh, knee)
+    # a still segment (no forward learned) simply contributes 0
+    assert sagittal_inclination((0.1, 0.0, 0.99), d_t, None) == 0.0
+    print("  gravity-referenced angle OK")
+
     print(f"  example summary line: {h.summary()}")
     print("Self-test PASSED.\n")
 
@@ -379,7 +491,8 @@ def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
 
 
 def run(port, out_path, baud=115200,
-        cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS, raw=False):
+        cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS, raw=False,
+        method='gravity'):
     if serial is None:
         raise RuntimeError("pyserial not installed. pip install pyserial")
 
@@ -406,12 +519,16 @@ def run(port, out_path, baud=115200,
                      'knee_angle_deg', 'status', 'rtt_us'])
 
     handler = DropoutHandler()
-    q_rel0 = None          # static-zero reference
-    flex_axis = None       # learned flexion axis
+    q_rel0 = None          # quat method: static-zero reference
+    flex_axis = None       # quat method: learned flexion axis
     zero_done = False
     axis_done = False
     zero_samples = []
     sweep_deltas = []
+    # gravity method: per-board zero direction and learned forward axis
+    d_thigh = d_shank = f_thigh = f_shank = None
+    gz_thigh = []; gz_shank = []      # gravity-in-board during zeroing
+    gs_thigh = []; gs_shank = []      # gravity-in-board during sweep
 
     t_zero_end = cal_seconds
     t_sweep_end = cal_seconds + sweep_seconds
@@ -419,10 +536,10 @@ def run(port, out_path, baud=115200,
     # Don't start the calibration clock until real data is flowing, otherwise the
     # zero window can elapse before the user is ready (or hang invisibly on a bad
     # link). wait_for_stream diagnoses no-data / wrong-firmware / dead-slave.
-    print(f"Waiting for data on {port} ...")
+    print(f"Waiting for data on {port} ... (angle method: {method})")
     wait_for_stream(ser, port)
     start = time.time()
-    print(f"Hold FULL EXTENSION ~{cal_seconds:.0f} s (zeroing)...")
+    print(f"Stand with the leg STRAIGHT and STILL ~{cal_seconds:.0f} s (zeroing)...")
 
     try:
         while True:
@@ -437,33 +554,50 @@ def run(port, out_path, baud=115200,
 
             angle = None
             if not zero_done:
-                # Phase 1: hold full extension, average q_rel.
+                # Phase 1: straight-and-still hold. Capture the zero references.
                 if valid:
                     zero_samples.append(q_rel)
+                    gz_thigh.append(gravity_in_board(rec['thigh_q']))
+                    gz_shank.append(gravity_in_board(rec['shank_q']))
                 status = 'zeroing'
                 if elapsed >= t_zero_end:
-                    q_rel0 = average_quaternion(zero_samples)
+                    q_rel0 = average_quaternion(zero_samples) or (1.0, 0.0, 0.0, 0.0)
+                    d_thigh = average_gravity(gz_thigh)
+                    d_shank = average_gravity(gz_shank)
                     zero_done = True
-                    if q_rel0 is not None:
-                        print(f"\nZero captured (mean of {len(zero_samples)} samples). "
-                              f"Now do slow knee FLEXION reps for ~{sweep_seconds:.0f} s...")
-                    else:
-                        q_rel0 = (1.0, 0.0, 0.0, 0.0)
-                        print("\nWARNING: no valid samples during hold; zero=identity. "
-                              f"Now do slow knee FLEXION reps for ~{sweep_seconds:.0f} s...")
+                    n = len(zero_samples)
+                    if n == 0:
+                        print("\nWARNING: no valid samples during hold.")
+                    print(f"\nZero captured ({n} samples). Now do a few slow reps that "
+                          f"bend BOTH the knee and hip (e.g. sit-to-stands / marching) "
+                          f"for ~{sweep_seconds:.0f} s...")
 
             elif not axis_done:
-                # Phase 2: functional sweep, learn the flexion axis. Show an
-                # unsigned preview of the total delta so the user can see motion.
+                # Phase 2: calibration motion. Learn the flexion axis (quat) and
+                # each segment's forward direction (gravity). Preview live angle.
                 status = 'sweep'
                 if valid:
                     q_delta = q_mul(q_conj(q_rel0), q_rel)
                     sweep_deltas.append(q_delta)
+                    gs_thigh.append(gravity_in_board(rec['thigh_q']))
+                    gs_shank.append(gravity_in_board(rec['shank_q']))
                     angle = total_angle_deg(q_delta)
                 if elapsed >= t_sweep_end:
                     flex_axis = estimate_flexion_axis(sweep_deltas)
+                    f_thigh = estimate_forward(gs_thigh, d_thigh)
+                    f_shank = estimate_forward(gs_shank, d_shank)
                     axis_done = True
-                    if flex_axis is not None:
+                    if method == 'gravity':
+                        if f_shank is None:
+                            print("\nWARNING: the shank barely moved during calibration "
+                                  "-- redo with a fuller range. Reporting anyway.")
+                        elif f_thigh is None:
+                            print("\nNote: thigh didn't tilt during calibration; treating "
+                                  "it as fixed (knee = shank inclination). Ctrl-C to stop.")
+                        else:
+                            print("\nCalibrated (gravity, drift-free). Reporting knee "
+                                  "angle. Ctrl-C to stop.")
+                    elif flex_axis is not None:
                         print("\nFlexion axis learned. Reporting SIGNED knee angle. "
                               "Ctrl-C to stop.")
                     else:
@@ -471,14 +605,16 @@ def run(port, out_path, baud=115200,
                               "reporting UNSIGNED angle magnitude. Ctrl-C to stop.")
 
             else:
-                # Phase 3: run. Signed angle about the learned axis (or unsigned
-                # magnitude if the sweep didn't yield a trustworthy axis).
+                # Phase 3: run.
                 if valid:
-                    q_delta = q_mul(q_conj(q_rel0), q_rel)
-                    if flex_axis is not None:
-                        angle = signed_flexion_deg(q_delta, flex_axis)
+                    if method == 'gravity':
+                        # Drift-free sagittal knee = thigh inclination - shank incl.
+                        angle = gravity_knee_angle(rec['thigh_q'], rec['shank_q'],
+                                                   d_thigh, f_thigh, d_shank, f_shank)
+                    elif flex_axis is not None:
+                        angle = signed_flexion_deg(q_mul(q_conj(q_rel0), q_rel), flex_axis)
                     else:
-                        angle = total_angle_deg(q_delta)
+                        angle = total_angle_deg(q_mul(q_conj(q_rel0), q_rel))
                 angle, status = handler.process(valid, angle)
 
             tq = rec['thigh_q']
@@ -505,26 +641,36 @@ def run(port, out_path, baud=115200,
         ser.close()
 
 
+def _incl_from_zero(g, d):
+    """Unsigned tilt (deg) of gravity g away from its zero direction d."""
+    c = max(-1.0, min(1.0, _dot3(g, d)))
+    return math.degrees(math.acos(c))
+
+
 def monitor(port, baud=115200, zero_seconds=1.5):
-    """Bring-up diagnostic: zero once on a brief still hold, then print the raw
-    RELATIVE angle live. No sweep, no CSV. Lets you see immediately whether the
-    sensor data tracks the knee (problem is calibration) or not (problem is
-    firmware/link/filter). rtt and valid% localize a bad slave link."""
+    """Bring-up diagnostic: zero once on a brief still hold, then show each
+    segment's DRIFT-FREE gravity inclination and the yaw-prone relative-quaternion
+    angle side by side. If 'rel' climbs at rest while thigh/shank stay put, that's
+    the 6-DOF yaw drift the gravity method avoids. rtt/valid% localize a bad link."""
     if serial is None:
         raise RuntimeError("pyserial not installed. pip install pyserial")
     ser = serial.Serial(port, baud, timeout=1)
     print(f"Monitor on {port}. Hold the leg STILL to zero...")
     wait_for_stream(ser, port)
 
-    zero_samples = []
+    zero_samples = []; gz_t = []; gz_s = []
     start = time.time()
     while time.time() - start < zero_seconds:
         rec = parse_line(ser.readline().decode('ascii', 'ignore'))
         if rec and is_valid(rec):
             zero_samples.append(relative_quaternion(rec['thigh_q'], rec['shank_q']))
+            gz_t.append(gravity_in_board(rec['thigh_q']))
+            gz_s.append(gravity_in_board(rec['shank_q']))
     q_rel0 = average_quaternion(zero_samples) or (1.0, 0.0, 0.0, 0.0)
-    print(f"Zeroed on {len(zero_samples)} samples. Now MOVE the knee "
-          "(should read ~0 at rest, climb with flexion). Ctrl-C to stop.")
+    d_t = average_gravity(gz_t) or (0.0, 0.0, 1.0)
+    d_s = average_gravity(gz_s) or (0.0, 0.0, 1.0)
+    print(f"Zeroed on {len(zero_samples)} samples. thigh/shank are drift-free "
+          "gravity tilts; rel is the yaw-prone quaternion angle. Ctrl-C to stop.")
 
     n = nbad = 0
     try:
@@ -535,14 +681,15 @@ def monitor(port, baud=115200, zero_seconds=1.5):
             n += 1
             if not is_valid(rec):
                 nbad += 1
-                print(f"\r  angle:   --    [shank INVALID]  valid:{100*(n-nbad)/n:4.0f}%  "
-                      f"rtt:{rec['rtt']:5d}us   ", end='')
+                print(f"\r  [shank INVALID]  valid:{100*(n-nbad)/n:4.0f}%  "
+                      f"rtt:{rec['rtt']:5d}us      ", end='')
                 continue
-            q_delta = q_mul(q_conj(q_rel0),
-                            relative_quaternion(rec['thigh_q'], rec['shank_q']))
-            ang = total_angle_deg(q_delta)
-            print(f"\r  relative angle: {ang:6.1f} deg   valid:{100*(n-nbad)/n:4.0f}%  "
-                  f"rtt:{rec['rtt']:5d}us   ", end='')
+            it = _incl_from_zero(gravity_in_board(rec['thigh_q']), d_t)
+            is_ = _incl_from_zero(gravity_in_board(rec['shank_q']), d_s)
+            rel = total_angle_deg(q_mul(q_conj(q_rel0),
+                                        relative_quaternion(rec['thigh_q'], rec['shank_q'])))
+            print(f"\r  thigh:{it:5.1f}  shank:{is_:5.1f}  rel:{rel:5.1f}  "
+                  f"valid:{100*(n-nbad)/n:4.0f}%  rtt:{rec['rtt']:5d}us   ", end='')
     except KeyboardInterrupt:
         print("\nMonitor stopped.")
     finally:
@@ -561,8 +708,11 @@ if __name__ == '__main__':
                     help='dump raw serial lines (with field count) and exit; '
                          'use this to check the master output format')
     ap.add_argument('--monitor', action='store_true',
-                    help='live bring-up check: zero on the first still second, then '
-                         'print the raw relative angle continuously (no sweep/CSV)')
+                    help='live bring-up check: shows drift-free gravity tilts vs the '
+                         'yaw-prone quaternion angle (no sweep/CSV)')
+    ap.add_argument('--method', choices=['gravity', 'quat'], default='gravity',
+                    help='gravity = drift-free sagittal inclinometer (default); '
+                         'quat = relative-quaternion swing-twist')
     ap.add_argument('--selftest', action='store_true')
     args = ap.parse_args()
 
@@ -573,5 +723,5 @@ if __name__ == '__main__':
     elif args.monitor:
         monitor(args.port)
     else:
-        run(args.port, args.out, raw=args.raw,
+        run(args.port, args.out, raw=args.raw, method=args.method,
             cal_seconds=args.cal_seconds, sweep_seconds=args.sweep_seconds)
