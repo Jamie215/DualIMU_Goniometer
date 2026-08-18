@@ -27,7 +27,28 @@ float integralFBx = 0.0f, integralFBy = 0.0f, integralFBz = 0.0f;
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
 unsigned long lastMicros = 0;
 
+// Resting gyro bias (deg/s), measured at startup and subtracted every sample.
+// In 6-DOF the yaw-axis bias is otherwise NEVER corrected (gravity can't see
+// heading), so an uncorrected bias makes the orientation rotate on its own.
+float gyroBias[3] = {0.0f, 0.0f, 0.0f};
+
 const unsigned long SLAVE_TIMEOUT_US = 8000;
+
+// Average the gyro while the board is held still to estimate its bias.
+void calibrateGyroBias() {
+  const int N = 300;
+  float sx = 0, sy = 0, sz = 0;
+  int got = 0;
+  unsigned long t0 = millis();
+  while (got < N && millis() - t0 < 4000) {
+    if (IMU.gyroscopeAvailable()) {
+      float gx, gy, gz;
+      IMU.readGyroscope(gx, gy, gz);
+      sx += gx; sy += gy; sz += gz; got++;
+    }
+  }
+  if (got > 0) { gyroBias[0] = sx / got; gyroBias[1] = sy / got; gyroBias[2] = sz / got; }
+}
 
 void seedFromAccel(float ax, float ay, float az) {
   float roll  = atan2(ay, az);
@@ -87,6 +108,13 @@ void setup() {
   }
   Serial.println("# MASTER cols: D,t_thigh_us,tw,tx,ty,tz,t_shank_mid_us,sw,sx,sy,sz,rtt_us");
 
+  // Keep the board STILL for the first few seconds after reset for this to work.
+  calibrateGyroBias();
+  Serial.print("# master gyro bias dps: ");
+  Serial.print(gyroBias[0], 3); Serial.print(',');
+  Serial.print(gyroBias[1], 3); Serial.print(',');
+  Serial.println(gyroBias[2], 3);
+
   lastMicros = micros();
   unsigned long t0 = millis();
   while (!IMU.accelerationAvailable() && millis() - t0 < 2000) { ; }
@@ -123,6 +151,7 @@ void loop() {
     float ax, ay, az, gx, gy, gz;
     IMU.readAcceleration(ax, ay, az);
     IMU.readGyroscope(gx, gy, gz);      // deg/s
+    gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
 
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;

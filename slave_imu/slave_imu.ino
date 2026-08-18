@@ -21,6 +21,25 @@ float integralFBx = 0.0f, integralFBy = 0.0f, integralFBz = 0.0f;
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;   // cached latest orientation
 unsigned long lastMicros = 0;
 
+// Resting gyro bias (deg/s), measured at startup and subtracted every sample.
+// Uncorrected yaw-axis bias is the main drift source in a 6-DOF filter.
+float gyroBias[3] = {0.0f, 0.0f, 0.0f};
+
+void calibrateGyroBias() {
+  const int N = 300;
+  float sx = 0, sy = 0, sz = 0;
+  int got = 0;
+  unsigned long t0 = millis();
+  while (got < N && millis() - t0 < 4000) {
+    if (IMU.gyroscopeAvailable()) {
+      float gx, gy, gz;
+      IMU.readGyroscope(gx, gy, gz);
+      sx += gx; sy += gy; sz += gz; got++;
+    }
+  }
+  if (got > 0) { gyroBias[0] = sx / got; gyroBias[1] = sy / got; gyroBias[2] = sz / got; }
+}
+
 void seedFromAccel(float ax, float ay, float az) {
   float roll  = atan2(ay, az);
   float pitch = atan2(-ax, sqrt(ay * ay + az * az));
@@ -75,6 +94,8 @@ void setup() {
                 digitalWrite(LED_BUILTIN, LOW);  delay(150); }
   }
 
+  calibrateGyroBias();     // keep the board STILL for the first few seconds
+
   lastMicros = micros();
 
   unsigned long t0 = millis();
@@ -114,6 +135,7 @@ void loop() {
     IMU.readAcceleration(ax, ay, az);
     serviceRequest();
     IMU.readGyroscope(gx, gy, gz);      // deg/s
+    gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
     serviceRequest();
 
     unsigned long now = micros();
