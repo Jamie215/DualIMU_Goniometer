@@ -1,14 +1,12 @@
 /*
- * KNEE ANGLE - SLAVE (shank)  [UART, 6-DOF quaternion]
+ * KNEE ANGLE - SLAVE (shank)  [UART, 6-DOF quaternion + raw gravity]
  * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270; magnetometer unused)
  *
- * 6-DOF Mahony filter (accel + gyro). On request ('R') it replies with its
- * orientation quaternion. The knee angle is computed on the PC from the RELATIVE
- * rotation of the two segments (see master_imu.ino), so how the board is strapped
- * to the shank does not matter as long as it's rigid.
+ * On request ('R') replies with its orientation quaternion AND its raw
+ * accelerometer vector (see master_imu.ino for the packet + the handedness note).
  *
- * Reply packet (18 bytes):
- *   [0] 0xAA header, [1..16] float q0..q3 (LE, w,x,y,z), [17] XOR checksum[1..16]
+ * Reply packet (30 bytes):
+ *   [0] 0xAA, [1..16] float q0..q3, [17..28] float ax,ay,az, [29] XOR of [1..28]
  *
  * Wiring: Slave TX(D1)->Master RX(D0), Slave RX(D0)<-Master TX(D1), GND<->GND.
  */
@@ -19,11 +17,20 @@ const float TWO_KP = 2.0f * 0.5f;
 const float TWO_KI = 2.0f * 0.02f;
 float integralFBx = 0.0f, integralFBy = 0.0f, integralFBz = 0.0f;
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;   // cached latest orientation
+float accX = 0.0f, accY = 0.0f, accZ = 1.0f;        // cached latest raw accel (g)
 unsigned long lastMicros = 0;
 
-// Resting gyro bias (deg/s), measured at startup and subtracted every sample.
-// Uncorrected yaw-axis bias is the main drift source in a 6-DOF filter.
 float gyroBias[3] = {0.0f, 0.0f, 0.0f};
+const float BIAS_SANITY_DPS = 3.0f;
+
+// Arduino_BMI270_BMM150 returns a REFLECTED (left-handed) frame; negate x of
+// accel AND gyro to restore a right-handed frame for the quaternion filter.
+inline void readAccel(float &ax, float &ay, float &az) {
+  IMU.readAcceleration(ax, ay, az); ax = -ax;
+}
+inline void readGyro(float &gx, float &gy, float &gz) {
+  IMU.readGyroscope(gx, gy, gz); gx = -gx;
+}
 
 void calibrateGyroBias() {
   const int N = 300;
@@ -33,11 +40,17 @@ void calibrateGyroBias() {
   while (got < N && millis() - t0 < 4000) {
     if (IMU.gyroscopeAvailable()) {
       float gx, gy, gz;
-      IMU.readGyroscope(gx, gy, gz);
+      readGyro(gx, gy, gz);
       sx += gx; sy += gy; sz += gz; got++;
     }
   }
-  if (got > 0) { gyroBias[0] = sx / got; gyroBias[1] = sy / got; gyroBias[2] = sz / got; }
+  if (got > 0) {
+    float bx = sx / got, by = sy / got, bz = sz / got;
+    float m = max(fabs(bx), max(fabs(by), fabs(bz)));
+    if (m <= BIAS_SANITY_DPS) {
+      gyroBias[0] = bx; gyroBias[1] = by; gyroBias[2] = bz;
+    }
+  }
 }
 
 void seedFromAccel(float ax, float ay, float az) {
@@ -48,7 +61,6 @@ void seedFromAccel(float ax, float ay, float az) {
   q0 = cr * cp; q1 = sr * cp; q2 = cr * sp; q3 = -sr * sp;
 }
 
-// Mahony AHRS update, IMU-only (accel + gyro). Gyro in rad/s.
 void mahonyUpdate(float gx, float gy, float gz,
                   float ax, float ay, float az, float dt) {
   if (!(ax == 0.0f && ay == 0.0f && az == 0.0f)) {
@@ -69,9 +81,7 @@ void mahonyUpdate(float gx, float gy, float gz,
       integralFBz += TWO_KI * halfez * dt;
       gx += integralFBx; gy += integralFBy; gz += integralFBz;
     }
-    gx += TWO_KP * halfex;
-    gy += TWO_KP * halfey;
-    gz += TWO_KP * halfez;
+    gx += TWO_KP * halfex; gy += TWO_KP * halfey; gz += TWO_KP * halfez;
   }
 
   gx *= 0.5f * dt; gy *= 0.5f * dt; gz *= 0.5f * dt;
@@ -94,30 +104,33 @@ void setup() {
                 digitalWrite(LED_BUILTIN, LOW);  delay(150); }
   }
 
-  calibrateGyroBias();     // keep the board STILL for the first few seconds
+  calibrateGyroBias();                 // keep the board STILL at startup
 
   lastMicros = micros();
-
   unsigned long t0 = millis();
   while (!IMU.accelerationAvailable() && millis() - t0 < 2000) { ; }
   if (IMU.accelerationAvailable()) {
     float ax, ay, az;
-    IMU.readAcceleration(ax, ay, az);
+    readAccel(ax, ay, az);
+    accX = ax; accY = ay; accZ = az;
     seedFromAccel(ax, ay, az);
   }
 }
 
 inline void sendPacket() {
-  uint8_t pkt[18];
+  uint8_t pkt[30];
   pkt[0] = 0xAA;
   memcpy(&pkt[1],  &q0, 4);
   memcpy(&pkt[5],  &q1, 4);
   memcpy(&pkt[9],  &q2, 4);
   memcpy(&pkt[13], &q3, 4);
+  memcpy(&pkt[17], &accX, 4);
+  memcpy(&pkt[21], &accY, 4);
+  memcpy(&pkt[25], &accZ, 4);
   uint8_t cs = 0;
-  for (int i = 1; i <= 16; i++) cs ^= pkt[i];
-  pkt[17] = cs;
-  Serial1.write(pkt, 18);
+  for (int i = 1; i <= 28; i++) cs ^= pkt[i];
+  pkt[29] = cs;
+  Serial1.write(pkt, 30);
 }
 
 inline void serviceRequest() {
@@ -132,11 +145,13 @@ void loop() {
 
   if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
     float ax, ay, az, gx, gy, gz;
-    IMU.readAcceleration(ax, ay, az);
+    readAccel(ax, ay, az);
     serviceRequest();
-    IMU.readGyroscope(gx, gy, gz);      // deg/s
+    readGyro(gx, gy, gz);             // deg/s, handedness-corrected
     gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
     serviceRequest();
+
+    accX = ax; accY = ay; accZ = az;  // cache raw gravity for the reply
 
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;
