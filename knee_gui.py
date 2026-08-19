@@ -560,21 +560,22 @@ class App:
     }
 
     def __init__(self, tk, ttk, filedialog, messagebox, Figure, FigureCanvasTkAgg,
-                 initial_simulate=False):
+                 NavigationToolbar2Tk, initial_simulate=False):
         self.tk = tk; self.ttk = ttk
         self.filedialog = filedialog; self.messagebox = messagebox
         self.collector = None
         self.sampler = None
         self._last_phase = None
+        self._stopped_fitted = False   # did we already fit-all the frozen view?
 
         self.root = tk.Tk()
         self.root.title("Knee Goniometer -- live collection")
-        self.root.geometry("1000x760")
+        self.root.geometry("1000x800")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._build_toolbar()
         self._build_banner()
-        self._build_plots(Figure, FigureCanvasTkAgg)
+        self._build_plots(Figure, FigureCanvasTkAgg, NavigationToolbar2Tk)
         self._build_controls()
 
         if initial_simulate:
@@ -607,7 +608,7 @@ class App:
                                     fg="white", bg="#607d8b", pady=12)
         self.banner.pack(fill='x')
 
-    def _build_plots(self, Figure, FigureCanvasTkAgg):
+    def _build_plots(self, Figure, FigureCanvasTkAgg, NavigationToolbar2Tk):
         self.fig = Figure(figsize=(9, 5.2), dpi=100)
         self.ax_knee, self.ax_incl, self.ax_rtt = self.fig.subplots(
             3, 1, sharex=True, gridspec_kw={'height_ratios': [3, 2, 1]})
@@ -630,6 +631,14 @@ class App:
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.root)
         self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=6, pady=4)
+
+        # Pan/zoom/home/save toolbar. It is most useful once collecting stops:
+        # the live loop stops driving the axes then, so pan and zoom stick.
+        tb_frame = self.ttk.Frame(self.root)
+        tb_frame.pack(fill='x')
+        self.nav = NavigationToolbar2Tk(self.canvas, tb_frame, pack_toolbar=False)
+        self.nav.update()
+        self.nav.pack(side='left')
 
     def _build_controls(self):
         tk, ttk = self.tk, self.ttk
@@ -768,7 +777,7 @@ class App:
             s = self.collector.snapshot()
             self._update_buttons(s['phase'])
             self._update_banner(s)
-            self._update_plots()
+            self._update_plots(s['phase'])
         self.root.after(33, self._tick)
 
     def _update_buttons(self, phase):
@@ -810,9 +819,32 @@ class App:
             bits.append(f"valid {pct:0.1f}%")
         self.stats_var.set("   ".join(bits))
 
-    def _update_plots(self):
+    def _update_plots(self, phase):
         if not self.sampler:
             return
+        active = phase in Sampler.ACTIVE
+
+        if not active:
+            # Collection stopped: freeze. Do a single "fit the whole session"
+            # autoscale, then stop touching the axes so the toolbar's pan/zoom
+            # (and Home) stay put and the trace can be inspected freely.
+            if not self._stopped_fitted:
+                t, ang, it, is_, rtt = self.sampler.get_plot_arrays()
+                if t:
+                    self.line_knee.set_data(t, ang)
+                    self.line_it.set_data(t, it)
+                    self.line_is.set_data(t, is_)
+                    self.line_rtt.set_data(t, rtt)
+                    for ax in (self.ax_knee, self.ax_incl, self.ax_rtt):
+                        ax.set_xlim(t[0], t[-1] if t[-1] > t[0] else t[0] + 1)
+                        ax.relim(); ax.autoscale_view()
+                    self.canvas.draw()
+                    self.nav.update()   # make this fitted view the toolbar's Home
+                self._stopped_fitted = True
+            return
+
+        # Actively collecting: live rolling window with y-autoscale.
+        self._stopped_fitted = False
         t, ang, it, is_, rtt = self.sampler.get_plot_arrays()
         if not t:
             return
@@ -841,9 +873,10 @@ def run_gui(simulate=False):
     import matplotlib
     matplotlib.use('TkAgg')
     from matplotlib.figure import Figure
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.backends.backend_tkagg import (
+        FigureCanvasTkAgg, NavigationToolbar2Tk)
     App(tk, ttk, filedialog, messagebox, Figure, FigureCanvasTkAgg,
-        initial_simulate=simulate).run()
+        NavigationToolbar2Tk, initial_simulate=simulate).run()
 
 
 # --------------------------------------------------------------------------- #
