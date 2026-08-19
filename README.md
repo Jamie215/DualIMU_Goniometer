@@ -85,10 +85,16 @@ What it adds over the CLI:
   **Fill** forward-fills short gaps and draws a continuous line;
   **Gap** keeps only real samples and draws discrete points, so dropouts appear
   as visible gaps. The CSV records which samples were real in either mode.
-- **Pause / errors** — Pause freezes logging (the display stays live); a red
-  banner names the exact fault (no data / wrong firmware / dead slave link).
-- **Auto-save** — a timestamped `knee_YYYYMMDD_HHMMSS.csv` is opened on
-  Connect; **Save copy…** relocates it. A crash never loses a session.
+- **Session-based collect / stop / reset** — each **Calibrate & collect** starts
+  a fresh session: a new timestamped CSV, a cleared plot, and calibration from
+  scratch. **Stop collecting** ends it, freezes the display on the last data,
+  and returns to idle. Collecting again is a clean reset — you recalibrate, and
+  a new file is written. (There is no pause/resume: the display only rolls while
+  a session is actually collecting.)
+- **Errors** — a red banner names the exact fault (no data / wrong firmware /
+  dead slave link), using the same diagnosis as the CLI.
+- **Auto-save** — each session auto-saves to `knee_YYYYMMDD_HHMMSS.csv`;
+  **Save copy…** relocates the current one. A crash never loses a session.
 
 The CSV is a superset of the CLI log (adds wall-clock and session time, the two
 inclinations, and the `phase` / `fill_mode` columns), so existing analysis still

@@ -226,6 +226,7 @@ class Collector(threading.Thread):
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._req_cal = threading.Event()
+        self._req_stop_collecting = threading.Event()
 
         # calibration products
         self._d_thigh = self._d_shank = None
@@ -247,6 +248,10 @@ class Collector(threading.Thread):
     # -- commands (thread-safe) --
     def request_calibration(self):
         self._req_cal.set()
+
+    def stop_collecting(self):
+        """End the active session: drop the calibration and return to idle."""
+        self._req_stop_collecting.set()
 
     def stop(self):
         self._stop.set()
@@ -315,8 +320,21 @@ class Collector(threading.Thread):
                     phase = 'idle'
                     self._set(phase='idle', link_error=False, link_msg='')
 
-            # calibration request: begin from idle or running
-            if self._req_cal.is_set() and phase in ('idle', 'running'):
+            # stop-collecting request: reset to idle and discard calibration, so
+            # the next collection starts a fresh, recalibrated session.
+            if self._req_stop_collecting.is_set():
+                self._req_stop_collecting.clear()
+                if phase in ('zeroing', 'sweep', 'running'):
+                    gz_t.clear(); gz_s.clear(); gs_t.clear(); gs_s.clear()
+                    self._d_thigh = self._d_shank = None
+                    self._f_thigh = self._f_shank = None
+                    phase = 'idle'
+                    self._set(phase='idle', cal_note='', sweep_preview=None,
+                              phase_end=None, angle=None, incl_t=None, incl_s=None)
+
+            # calibration (re)starts a session from idle. Each press is a reset:
+            # a fresh zero + sweep, and (in the sampler) a new CSV and cleared plot.
+            if self._req_cal.is_set() and phase == 'idle':
                 self._req_cal.clear()
                 gz_t.clear(); gz_s.clear(); gs_t.clear(); gs_s.clear()
                 phase = 'zeroing'
@@ -402,6 +420,13 @@ class Collector(threading.Thread):
 # --------------------------------------------------------------------------- #
 # Sampler thread: snapshots the collector onto the fixed 100 Hz grid, applies the
 # fill/gap gate, appends to the plot ring buffer, and writes the CSV.
+#
+# Collection is SESSION-based and driven by the collector's phase: a session runs
+# for as long as the phase is zeroing/sweep/running. On the transition into a
+# session it opens a fresh timestamped CSV and clears the plot; on the transition
+# out (a Stop, which resets to idle) it closes the file. Outside a session it
+# does nothing -- so when stopped the display FREEZES on the last data instead of
+# rolling, and re-collecting is a clean reset with its own file.
 # --------------------------------------------------------------------------- #
 class Sampler(threading.Thread):
     HEADER = ['t_wall_iso', 't_session_s', 't_thigh_us',
@@ -409,26 +434,26 @@ class Sampler(threading.Thread):
               'shank_qw', 'shank_qx', 'shank_qy', 'shank_qz',
               'knee_angle_deg', 'incl_thigh_deg', 'incl_shank_deg',
               'status', 'phase', 'rtt_us', 'fill_mode']
+    ACTIVE = ('zeroing', 'sweep', 'running')
 
-    def __init__(self, collector, csv_path):
+    def __init__(self, collector, path_prefix='knee'):
         super().__init__(daemon=True)
         self.collector = collector
-        self.csv_path = csv_path
+        self.path_prefix = path_prefix
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        self.gate = SampleGate()
-        self.paused = False
+        self.fill_mode = True
+        self.gate = SampleGate(fill_mode=True)
         self.buf = deque(maxlen=PLOT_N)   # dicts: t, angle, incl_t, incl_s, rtt
+        self.current_path = None          # CSV of the session in progress (or last)
 
     def stop(self):
         self._stop.set()
 
     def set_fill_mode(self, fill):
         with self._lock:
+            self.fill_mode = fill
             self.gate.fill_mode = fill
-
-    def set_paused(self, paused):
-        self.paused = paused
 
     def get_plot_arrays(self):
         with self._lock:
@@ -443,41 +468,59 @@ class Sampler(threading.Thread):
         with self._lock:
             return self.gate.valid_pct()
 
-    def run(self):
-        nan = float('nan')
-        f = open(self.csv_path, 'w', newline='')
+    def _open_session(self):
+        path = datetime.now().strftime(self.path_prefix + "_%Y%m%d_%H%M%S.csv")
+        f = open(path, 'w', newline='')
         writer = csv.writer(f)
         writer.writerow(self.HEADER)
         f.flush()
-        session_start = time.monotonic()
+        with self._lock:
+            self.buf.clear()                       # fresh plot for the new session
+            self.gate = SampleGate(fill_mode=self.fill_mode)   # fresh valid% stats
+            self.current_path = path
+        return f, writer
+
+    def run(self):
+        nan = float('nan')
+        f = writer = None
+        active = False
+        session_start = 0.0
         next_t = time.monotonic()
         try:
             while not self._stop.is_set():
                 now = time.monotonic()
                 s = self.collector.snapshot()
                 phase = s['phase']
-                t_rel = now - session_start
+                is_active = phase in self.ACTIVE
 
-                with self._lock:
-                    if phase == 'running':
-                        fresh = s['valid'] and (now - s['recv_mono'] < STALE_SEC)
-                        out_angle, status = self.gate.process(
-                            fresh, s['angle'] if fresh else None)
-                        incl_t = s['incl_t'] if (fresh and s['incl_t'] is not None) else nan
-                        incl_s = s['incl_s'] if (fresh and s['incl_s'] is not None) else nan
-                    else:
-                        out_angle, status = None, phase
-                        incl_t = incl_s = nan
-                    self.buf.append({
-                        't': t_rel,
-                        'angle': out_angle if out_angle is not None else nan,
-                        'incl_t': incl_t, 'incl_s': incl_s,
-                        'rtt': s['rtt'],
-                    })
-                    fill_mode = self.gate.fill_mode
+                if is_active and not active:          # session begins
+                    f, writer = self._open_session()
+                    session_start = now
+                    active = True
+                elif not is_active and active:        # session ends (Stop -> idle)
+                    f.flush(); f.close(); f = writer = None
+                    active = False
 
-                # log only meaningful phases, and never while paused
-                if phase in ('zeroing', 'sweep', 'running') and not self.paused:
+                if active:
+                    t_rel = now - session_start
+                    with self._lock:
+                        if phase == 'running':
+                            fresh = s['valid'] and (now - s['recv_mono'] < STALE_SEC)
+                            out_angle, status = self.gate.process(
+                                fresh, s['angle'] if fresh else None)
+                            incl_t = s['incl_t'] if (fresh and s['incl_t'] is not None) else nan
+                            incl_s = s['incl_s'] if (fresh and s['incl_s'] is not None) else nan
+                        else:                          # zeroing / sweep: no angle yet
+                            out_angle, status = None, phase
+                            incl_t = incl_s = nan
+                        self.buf.append({
+                            't': t_rel,
+                            'angle': out_angle if out_angle is not None else nan,
+                            'incl_t': incl_t, 'incl_s': incl_s,
+                            'rtt': s['rtt'],
+                        })
+                        fill_mode = self.gate.fill_mode
+
                     tq = s['thigh_q']; sq = s['shank_q']
                     tq_cols = [f"{c:.4f}" for c in tq] if tq else ['', '', '', '']
                     sq_cols = [f"{c:.4f}" for c in sq] if sq else ['', '', '', '']
@@ -498,8 +541,8 @@ class Sampler(threading.Thread):
                 else:
                     next_t = time.monotonic()   # fell behind; resync the grid
         finally:
-            f.flush()
-            f.close()
+            if f is not None:
+                f.flush(); f.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -510,7 +553,7 @@ class App:
     PHASE_STYLE = {
         'connecting': ('#607d8b', 'Connecting ...'),
         'waiting':    ('#607d8b', 'Waiting for data'),
-        'idle':       ('#455a64', 'Streaming OK -- press Calibrate to begin'),
+        'idle':       ('#455a64', 'Streaming OK -- press Calibrate & collect to begin'),
         'zeroing':    ('#f9a825', 'CALIBRATING - HOLD STILL (straight leg)'),
         'sweep':      ('#f9a825', 'CALIBRATING - SWEEP (bend knee + hip)'),
         'running':    ('#2e7d32', 'RUNNING - logging at 100 Hz'),
@@ -522,7 +565,7 @@ class App:
         self.filedialog = filedialog; self.messagebox = messagebox
         self.collector = None
         self.sampler = None
-        self.csv_path = None
+        self._last_phase = None
 
         self.root = tk.Tk()
         self.root.title("Knee Goniometer -- live collection")
@@ -592,12 +635,12 @@ class App:
         tk, ttk = self.tk, self.ttk
         ctl = ttk.Frame(self.root, padding=6)
         ctl.pack(fill='x')
-        self.cal_btn = ttk.Button(ctl, text="Calibrate", command=self._calibrate,
+        self.cal_btn = ttk.Button(ctl, text="Calibrate & collect", command=self._calibrate,
                                   state='disabled')
         self.cal_btn.pack(side='left')
-        self.pause_btn = ttk.Button(ctl, text="Pause", command=self._toggle_pause,
-                                    state='disabled')
-        self.pause_btn.pack(side='left', padx=6)
+        self.stop_btn = ttk.Button(ctl, text="Stop collecting", command=self._stop_collecting,
+                                   state='disabled')
+        self.stop_btn.pack(side='left', padx=6)
 
         self.mode_var = tk.StringVar(value='fill')
         mode = ttk.LabelFrame(ctl, text="Dropouts", padding=4)
@@ -656,20 +699,17 @@ class App:
             self.messagebox.showwarning("No port", "Pick a port first (or Rescan).")
             return
         simulate = (device == SIM_PORT)
-        self.csv_path = datetime.now().strftime("knee_%Y%m%d_%H%M%S.csv")
         self.collector = Collector(device, simulate=simulate)
-        self.sampler = Sampler(self.collector, self.csv_path)
+        self.sampler = Sampler(self.collector)     # opens a CSV per collection
         self.collector.start()
         self.sampler.start()
         self._apply_mode()
+        self._last_phase = None                    # force a button-state refresh
 
         self.connect_btn.config(text="Disconnect")
         self.scan_btn.config(state='disabled')
         self.port_combo.config(state='disabled')
-        self.cal_btn.config(state='normal')
-        self.pause_btn.config(state='normal')
         self.save_btn.config(state='normal')
-        self.health_var.set(f"logging -> {self.csv_path}")
 
     def _disconnect(self):
         if self.sampler:
@@ -681,20 +721,18 @@ class App:
         self.scan_btn.config(state='normal')
         self.port_combo.config(state='readonly')
         self.cal_btn.config(state='disabled')
-        self.pause_btn.config(state='disabled', text="Pause")
+        self.stop_btn.config(state='disabled')
         self.save_btn.config(state='disabled')
+        self.health_var.set("")
 
     # -- controls --
     def _calibrate(self):
         if self.collector:
             self.collector.request_calibration()
 
-    def _toggle_pause(self):
-        if not self.sampler:
-            return
-        paused = not self.sampler.paused
-        self.sampler.set_paused(paused)
-        self.pause_btn.config(text="Resume" if paused else "Pause")
+    def _stop_collecting(self):
+        if self.collector:
+            self.collector.stop_collecting()
 
     def _apply_mode(self):
         fill = (self.mode_var.get() == 'fill')
@@ -707,16 +745,19 @@ class App:
             self.line_knee.set_markersize(3)
 
     def _save_copy(self):
-        if not self.csv_path:
+        path = self.sampler.current_path if self.sampler else None
+        if not path:
+            self.messagebox.showinfo("Nothing to save",
+                                     "No collection yet -- press Calibrate & collect first.")
             return
         dst = self.filedialog.asksaveasfilename(
-            defaultextension='.csv', initialfile=self.csv_path,
+            defaultextension='.csv', initialfile=path,
             filetypes=[('CSV', '*.csv')])
         if not dst:
             return
         import shutil
         try:
-            shutil.copy(self.csv_path, dst)
+            shutil.copy(path, dst)
             self.messagebox.showinfo("Saved", f"Copied to\n{dst}")
         except Exception as exc:
             self.messagebox.showerror("Save failed", str(exc))
@@ -724,16 +765,31 @@ class App:
     # -- periodic UI refresh --
     def _tick(self):
         if self.collector is not None:
-            self._update_banner(self.collector.snapshot())
+            s = self.collector.snapshot()
+            self._update_buttons(s['phase'])
+            self._update_banner(s)
             self._update_plots()
         self.root.after(33, self._tick)
+
+    def _update_buttons(self, phase):
+        """Calibrate is available only from idle; Stop only while collecting.
+        Reacts to the actual phase, so auto-transitions keep the buttons honest."""
+        if phase == getattr(self, '_last_phase', None):
+            return
+        self._last_phase = phase
+        active = phase in Sampler.ACTIVE
+        self.cal_btn.config(state='normal' if phase == 'idle' else 'disabled')
+        self.stop_btn.config(state='normal' if active else 'disabled')
+        path = self.sampler.current_path if self.sampler else None
+        if active and path:
+            self.health_var.set(f"logging -> {path}")
+        elif phase == 'idle':
+            self.health_var.set("idle -- ready to calibrate & collect")
 
     def _update_banner(self, s):
         phase = s['phase']
         if s['link_error']:
             self.banner.config(bg='#c62828', text="LINK ERROR: " + (s['link_msg'] or ''))
-        elif phase == 'running' and self.sampler and self.sampler.paused:
-            self.banner.config(bg='#ef6c00', text="PAUSED - logging stopped (display live)")
         else:
             color, text = self.PHASE_STYLE.get(phase, ('#607d8b', phase))
             if phase in ('zeroing', 'sweep') and s['phase_end'] is not None:
