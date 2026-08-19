@@ -3,9 +3,10 @@
  * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270; magnetometer unused)
  *
  * Streams, per segment: an orientation quaternion (6-DOF Mahony) AND the raw
- * accelerometer vector. The collector's default "gravity" angle uses the RAW
- * accelerometer (drift-free, filter-free -- stationary => flat), while the
- * quaternion is available for the optional gyro-fused method.
+ * accelerometer vector. The collector derives the knee angle from the gravity
+ * direction in each board's own frame, taken from the QUATERNION (gyro-fused,
+ * so it stays smooth through fast motion and drift-free in tilt). The raw accel
+ * is still sent for the filter-free cross-check in --monitor.
  *
  * IMPORTANT axis note: Arduino_BMI270_BMM150 returns accel/gyro as
  *   x=-sensor.y, y=-sensor.x, z=sensor.z  (determinant -1, a REFLECTION -> a
@@ -39,9 +40,14 @@ unsigned long lastMicros = 0;
 float gyroBias[3] = {0.0f, 0.0f, 0.0f};
 const float BIAS_SANITY_DPS = 3.0f;
 
-// Trust the accelerometer as "gravity" only when its magnitude is near 1 g;
-// during fast motion linear acceleration corrupts it, so we let the gyro carry.
-const float ACC_GATE_G = 0.15f;
+// Accelerometer-as-gravity trust, as a function of how far |accel| is from 1 g.
+// A hard on/off gate let the filter run gyro-only through a fast move, so it
+// drifted and then snapped back on the way out (the "wrong reading right after
+// returning from a big angle" symptom). Instead we SOFT-gate: full accel trust
+// when nearly static, ramping linearly to zero as linear acceleration grows, so
+// some drift correction is always applied while the gyro carries the fast part.
+const float ACC_TRUST_FULL_G = 0.10f;   // within this of 1 g -> trust accel fully
+const float ACC_TRUST_ZERO_G = 0.60f;   // beyond this -> gyro only (no correction)
 
 const unsigned long SLAVE_TIMEOUT_US = 8000;
 
@@ -85,25 +91,34 @@ void seedFromAccel(float ax, float ay, float az) {
 void mahonyUpdate(float gx, float gy, float gz,
                   float ax, float ay, float az, float dt) {
   float amag = sqrt(ax * ax + ay * ay + az * az);
-  if (amag > 1e-6f && fabs(amag - 1.0f) < ACC_GATE_G) {
-    float recipNorm = 1.0f / amag;
-    ax *= recipNorm; ay *= recipNorm; az *= recipNorm;
+  if (amag > 1e-6f) {
+    // Soft gate: 1.0 near static, ramping to 0.0 as |accel| leaves 1 g.
+    float err = fabs(amag - 1.0f);
+    float trust;
+    if (err <= ACC_TRUST_FULL_G)      trust = 1.0f;
+    else if (err >= ACC_TRUST_ZERO_G) trust = 0.0f;
+    else trust = (ACC_TRUST_ZERO_G - err) / (ACC_TRUST_ZERO_G - ACC_TRUST_FULL_G);
 
-    float halfvx = q1 * q3 - q0 * q2;
-    float halfvy = q0 * q1 + q2 * q3;
-    float halfvz = q0 * q0 - 0.5f + q3 * q3;
+    if (trust > 0.0f) {
+      float recipNorm = 1.0f / amag;
+      ax *= recipNorm; ay *= recipNorm; az *= recipNorm;
 
-    float halfex = (ay * halfvz - az * halfvy);
-    float halfey = (az * halfvx - ax * halfvz);
-    float halfez = (ax * halfvy - ay * halfvx);
+      float halfvx = q1 * q3 - q0 * q2;
+      float halfvy = q0 * q1 + q2 * q3;
+      float halfvz = q0 * q0 - 0.5f + q3 * q3;
 
-    if (TWO_KI > 0.0f) {
-      integralFBx += TWO_KI * halfex * dt;
-      integralFBy += TWO_KI * halfey * dt;
-      integralFBz += TWO_KI * halfez * dt;
-      gx += integralFBx; gy += integralFBy; gz += integralFBz;
+      float halfex = (ay * halfvz - az * halfvy) * trust;
+      float halfey = (az * halfvx - ax * halfvz) * trust;
+      float halfez = (ax * halfvy - ay * halfvx) * trust;
+
+      if (TWO_KI > 0.0f) {
+        integralFBx += TWO_KI * halfex * dt;
+        integralFBy += TWO_KI * halfey * dt;
+        integralFBz += TWO_KI * halfez * dt;
+        gx += integralFBx; gy += integralFBy; gz += integralFBz;
+      }
+      gx += TWO_KP * halfex; gy += TWO_KP * halfey; gz += TWO_KP * halfez;
     }
-    gx += TWO_KP * halfex; gy += TWO_KP * halfey; gz += TWO_KP * halfez;
   }
 
   gx *= 0.5f * dt; gy *= 0.5f * dt; gz *= 0.5f * dt;
