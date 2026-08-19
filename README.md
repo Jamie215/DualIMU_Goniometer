@@ -71,14 +71,73 @@ tilt) and it's invariant to heading (so the 6-DOF yaw, which *does* drift, never
 enters). We read that gravity direction from the **fused quaternion** — so the
 gyro carries it smoothly through fast motion instead of the reading collapsing
 whenever the limb accelerates — then build a signed segment inclination and take
-the difference:
+the difference. Here is the full derivation.
+
+Notation: quaternions are `(w, x, y, z)`, Hamilton convention; `q*` is the
+conjugate; world "up" is `ẑ = (0, 0, 1)`. Each board `i ∈ {thigh, shank}`
+reports a unit orientation quaternion `q_i` (board → world).
+
+**1. Gravity in the board frame.** Rotate world-up into the board's own frame
+with the inverse orientation, and keep the vector part:
 
 ```
-d_i    = gravity direction in board i at the straight-and-still zero pose
-f_i    = each segment's "forward", learned from the calibration motion
-incl_i = atan2(g_i · f_i, g_i · d_i)          # signed tilt in the sagittal plane
-knee   = incl_thigh − incl_shank
+g_i = vec( q_i* ⊗ (0, ẑ) ⊗ q_i ),   then normalize      # unit vector
 ```
+
+`g_i` is the direction of gravity as the board feels it. It uses only the tilt
+part of `q_i`, so it is **drift-free** (the accelerometer fixes tilt) and
+**yaw-invariant** (rotating `q_i` about vertical leaves `g_i` unchanged). Code:
+`gravity_in_board()`.
+
+**2. Zero reference `d_i` (static-hold calibration).** With the leg held straight
+and still, average `g_i` over the hold window. `d_i` is the segment's long axis
+as seen in the board frame — the direction gravity points at 0°:
+
+```
+d_i = normalize( Σ g_i(t)  over the still hold )         # code: average_gravity()
+```
+
+**3. Forward direction `f_i` (functional-sweep calibration).** During the slow
+reps, the part of `g_i` **perpendicular to `d_i`** is the direction the segment
+tilts toward as it flexes. Remove the `d_i` component, sign-align the samples (the
+limb sweeps consistently one way from extension), and sum:
+
+```
+g⊥ = g_i − (g_i · d_i) d_i                                # in-plane component
+f_i = normalize( Σ sign(g⊥ · ref) · g⊥ )                  # code: estimate_forward()
+```
+
+Samples that tilt less than `SWEEP_MIN_ANGLE_DEG` are ignored so IMU noise around
+the zero pose can't define the direction. `d_i` and `f_i` are orthonormal by
+construction and together span that segment's **sagittal plane** in its own frame.
+If a segment barely moved, `f_i` is undefined and that segment contributes 0.
+
+**4. Signed segment inclination.** The tilt of the segment is the angle of `g_i`
+within the `(d_i, f_i)` plane — the four-quadrant angle from the zero axis `d_i`
+toward forward `f_i`:
+
+```
+incl_i = atan2( g_i · f_i , g_i · d_i )   [rad]           # code: sagittal_inclination()
+```
+
+At the zero pose `g_i = d_i`, so `g_i · f_i = 0`, `g_i · d_i = 1`, and
+`incl_i = 0`. `atan2` gives a continuous signed angle through the full range
+(flexion positive, hyperextension negative), with no ±90° wrap.
+
+**5. Knee angle.** The joint angle is the difference of the two segment
+inclinations:
+
+```
+knee = incl_thigh − incl_shank        (converted to degrees)   # code: gravity_knee_angle()
+```
+
+*Why the difference is placement-independent (sketch):* for planar flexion the
+segment rotates about a fixed axis, so `g_i(t)` traces a circular arc that lies
+entirely in one plane of the board frame — and a rigid mount `B_i` maps that plane
+to a fixed plane spanned by `d_i, f_i`. `incl_i` reads the arc angle inside that
+plane, and the fixed mount rotation only rotated the plane, not the angle within
+it. So any constant mount `B_i` cancels exactly (the `--selftest` proves this
+against random `B_thigh`, `B_shank`).
 
 Because every quantity is an angle between two vectors in the **same** board
 frame, the result is immune to:
@@ -91,9 +150,15 @@ Validated in `--selftest` against random mounts, a turning shared heading,
 independent per-board yaw drift (exact recovery), and a full flex-to-130°-and-back
 sweep (the signed angle retraces identically — no stuck zeros on return).
 
-**Trade-off:** it measures the **sagittal-plane** component of the angle — ideal
-for upright knee flexion (standing ROM, gait, sit-to-stand). It under-reads
-motion well out of the vertical plane (e.g. lying down with large hip rotation).
+**Trade-off:** gravity gives only **2 of the 3 rotational DOF** — it is blind to
+rotation about the vertical (gravity) axis. So this method measures the
+**sagittal-plane** component of the angle — ideal for upright knee flexion
+(standing ROM, gait, sit-to-stand). It under-reads motion well out of the vertical
+plane (e.g. lying down with large hip rotation). Note this is an *observability*
+limit, not a mounting one: a fixed mount tilt cancels for planar motion (step 5),
+but tilt combined with out-of-sagittal-plane motion steers part of the true joint
+rotation into the unobservable yaw direction, where gravity cannot see it — the
+one case a gravity-only method fundamentally cannot recover.
 
 ### Why the quaternion (not the raw accelerometer)
 
