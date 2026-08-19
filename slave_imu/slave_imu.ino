@@ -23,9 +23,12 @@ unsigned long lastMicros = 0;
 float gyroBias[3] = {0.0f, 0.0f, 0.0f};
 const float BIAS_SANITY_DPS = 3.0f;
 
-// Trust the accelerometer as gravity only when |accel| is near 1 g (reject
-// linear acceleration during fast motion; the gyro carries through).
-const float ACC_GATE_G = 0.15f;
+// Accelerometer-as-gravity trust vs how far |accel| is from 1 g. SOFT gate
+// (matches master): full trust near static, ramping to zero as linear
+// acceleration grows, so the filter is always partly drift-corrected while the
+// gyro carries the fast part -- no open-loop drift/snap-back after a fast move.
+const float ACC_TRUST_FULL_G = 0.10f;
+const float ACC_TRUST_ZERO_G = 0.60f;
 
 // Arduino_BMI270_BMM150 returns a REFLECTED (left-handed) frame; negate x of
 // accel AND gyro to restore a right-handed frame for the quaternion filter.
@@ -68,25 +71,33 @@ void seedFromAccel(float ax, float ay, float az) {
 void mahonyUpdate(float gx, float gy, float gz,
                   float ax, float ay, float az, float dt) {
   float amag = sqrt(ax * ax + ay * ay + az * az);
-  if (amag > 1e-6f && fabs(amag - 1.0f) < ACC_GATE_G) {
-    float recipNorm = 1.0f / amag;
-    ax *= recipNorm; ay *= recipNorm; az *= recipNorm;
+  if (amag > 1e-6f) {
+    float err = fabs(amag - 1.0f);
+    float trust;
+    if (err <= ACC_TRUST_FULL_G)      trust = 1.0f;
+    else if (err >= ACC_TRUST_ZERO_G) trust = 0.0f;
+    else trust = (ACC_TRUST_ZERO_G - err) / (ACC_TRUST_ZERO_G - ACC_TRUST_FULL_G);
 
-    float halfvx = q1 * q3 - q0 * q2;
-    float halfvy = q0 * q1 + q2 * q3;
-    float halfvz = q0 * q0 - 0.5f + q3 * q3;
+    if (trust > 0.0f) {
+      float recipNorm = 1.0f / amag;
+      ax *= recipNorm; ay *= recipNorm; az *= recipNorm;
 
-    float halfex = (ay * halfvz - az * halfvy);
-    float halfey = (az * halfvx - ax * halfvz);
-    float halfez = (ax * halfvy - ay * halfvx);
+      float halfvx = q1 * q3 - q0 * q2;
+      float halfvy = q0 * q1 + q2 * q3;
+      float halfvz = q0 * q0 - 0.5f + q3 * q3;
 
-    if (TWO_KI > 0.0f) {
-      integralFBx += TWO_KI * halfex * dt;
-      integralFBy += TWO_KI * halfey * dt;
-      integralFBz += TWO_KI * halfez * dt;
-      gx += integralFBx; gy += integralFBy; gz += integralFBz;
+      float halfex = (ay * halfvz - az * halfvy) * trust;
+      float halfey = (az * halfvx - ax * halfvz) * trust;
+      float halfez = (ax * halfvy - ay * halfvx) * trust;
+
+      if (TWO_KI > 0.0f) {
+        integralFBx += TWO_KI * halfex * dt;
+        integralFBy += TWO_KI * halfey * dt;
+        integralFBz += TWO_KI * halfez * dt;
+        gx += integralFBx; gy += integralFBy; gz += integralFBz;
+      }
+      gx += TWO_KP * halfex; gy += TWO_KP * halfey; gz += TWO_KP * halfez;
     }
-    gx += TWO_KP * halfex; gy += TWO_KP * halfey; gz += TWO_KP * halfez;
   }
 
   gx *= 0.5f * dt; gy *= 0.5f * dt; gz *= 0.5f * dt;

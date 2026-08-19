@@ -41,8 +41,9 @@ the boards in a precise, repeatable orientation.
    ```
    python knee_collector_uart.py --port /dev/ttyACM0 --monitor
    ```
-   `thigh` / `shank` are filter-free raw-accel tilts (rock-steady when still);
-   `rel` is the filter-based relative angle; `valid%` / `rtt` show link health.
+   `thigh` / `shank` are the gyro-fused gravity tilts the angle uses; `accel` is
+   a filter-free raw-accel cross-check; `rel` is the yaw-prone relative-quaternion
+   angle (drift probe); `valid%` / `rtt` show link health.
 4. **Collect**:
    ```
    python knee_collector_uart.py --port /dev/ttyACM0
@@ -59,52 +60,121 @@ the boards in a precise, repeatable orientation.
 ## How it works (the math)
 
 Each IMU estimates orientation with a **6-DOF Mahony filter** (accelerometer +
-gyroscope, no magnetometer — robust to nearby metal). The knee angle is derived
-from the **relative** geometry of the two segments, which is what makes it
-placement-independent.
+gyroscope, no magnetometer — robust to nearby metal). There is **one** angle
+method, chosen for reliability across both slow and brisk motion.
 
-### Default method: gravity-referenced sagittal inclinometer
+### Gravity-referenced sagittal inclinometer
 
-The reliable, drift-free quantity in 6-DOF is the **direction of gravity in each
-board's own frame**. From it we build a signed segment inclination and take the
-difference:
+The reliable, observable quantity in a 6-DOF filter is the **direction of gravity
+in each board's own frame**: the accelerometer pins it (so it doesn't drift in
+tilt) and it's invariant to heading (so the 6-DOF yaw, which *does* drift, never
+enters). We read that gravity direction from the **fused quaternion** — so the
+gyro carries it smoothly through fast motion instead of the reading collapsing
+whenever the limb accelerates — then build a signed segment inclination and take
+the difference. Here is the full derivation.
+
+Notation: quaternions are `(w, x, y, z)`, Hamilton convention; `q*` is the
+conjugate; world "up" is `ẑ = (0, 0, 1)`. Each board `i ∈ {thigh, shank}`
+reports a unit orientation quaternion `q_i` (board → world).
+
+**1. Gravity in the board frame.** Rotate world-up into the board's own frame
+with the inverse orientation, and keep the vector part:
 
 ```
-d_i    = gravity direction in board i at the straight-and-still zero pose
-f_i    = each segment's "forward", learned from the calibration motion
-incl_i = atan2(g_i · f_i, g_i · d_i)          # signed tilt in the sagittal plane
-knee   = incl_thigh − incl_shank
+g_i = vec( q_i* ⊗ (0, ẑ) ⊗ q_i ),   then normalize      # unit vector
 ```
 
-This is immune to:
+`g_i` is the direction of gravity as the board feels it. It uses only the tilt
+part of `q_i`, so it is **drift-free** (the accelerometer fixes tilt) and
+**yaw-invariant** (rotating `q_i` about vertical leaves `g_i` unchanged). Code:
+`gravity_in_board()`.
+
+**2. Zero reference `d_i` (static-hold calibration).** With the leg held straight
+and still, average `g_i` over the hold window. `d_i` is the segment's long axis
+as seen in the board frame — the direction gravity points at 0°:
+
+```
+d_i = normalize( Σ g_i(t)  over the still hold )         # code: average_gravity()
+```
+
+**3. Forward direction `f_i` (functional-sweep calibration).** During the slow
+reps, the part of `g_i` **perpendicular to `d_i`** is the direction the segment
+tilts toward as it flexes. Remove the `d_i` component, sign-align the samples (the
+limb sweeps consistently one way from extension), and sum:
+
+```
+g⊥ = g_i − (g_i · d_i) d_i                                # in-plane component
+f_i = normalize( Σ sign(g⊥ · ref) · g⊥ )                  # code: estimate_forward()
+```
+
+Samples that tilt less than `SWEEP_MIN_ANGLE_DEG` are ignored so IMU noise around
+the zero pose can't define the direction. `d_i` and `f_i` are orthonormal by
+construction and together span that segment's **sagittal plane** in its own frame.
+If a segment barely moved, `f_i` is undefined and that segment contributes 0.
+
+**4. Signed segment inclination.** The tilt of the segment is the angle of `g_i`
+within the `(d_i, f_i)` plane — the four-quadrant angle from the zero axis `d_i`
+toward forward `f_i`:
+
+```
+incl_i = atan2( g_i · f_i , g_i · d_i )   [rad]           # code: sagittal_inclination()
+```
+
+At the zero pose `g_i = d_i`, so `g_i · f_i = 0`, `g_i · d_i = 1`, and
+`incl_i = 0`. `atan2` gives a continuous signed angle through the full range
+(flexion positive, hyperextension negative), with no ±90° wrap.
+
+**5. Knee angle.** The joint angle is the difference of the two segment
+inclinations:
+
+```
+knee = incl_thigh − incl_shank        (converted to degrees)   # code: gravity_knee_angle()
+```
+
+*Why the difference is placement-independent (sketch):* for planar flexion the
+segment rotates about a fixed axis, so `g_i(t)` traces a circular arc that lies
+entirely in one plane of the board frame — and a rigid mount `B_i` maps that plane
+to a fixed plane spanned by `d_i, f_i`. `incl_i` reads the arc angle inside that
+plane, and the fixed mount rotation only rotated the plane, not the angle within
+it. So any constant mount `B_i` cancels exactly (the `--selftest` proves this
+against random `B_thigh`, `B_shank`).
+
+Because every quantity is an angle between two vectors in the **same** board
+frame, the result is immune to:
 - **Position** on the limb (orientation sensors don't measure location);
 - **Constant mounting rotation**, incl. **rotation of the board about the leg's
-  long axis** (the angle is between two vectors in the same board frame, so any
-  fixed mount rotation cancels);
+  long axis** (any fixed mount rotation cancels);
 - **6-DOF yaw drift** (gravity-in-board is invariant to heading about vertical).
 
-Validated in `--selftest` against random mounts, a turning shared heading, and
-independent per-board yaw drift (exact recovery).
+Validated in `--selftest` against random mounts, a turning shared heading,
+independent per-board yaw drift (exact recovery), and a full flex-to-130°-and-back
+sweep (the signed angle retraces identically — no stuck zeros on return).
 
-**Trade-off:** it measures the **sagittal-plane** component of the angle — ideal
-for upright knee flexion (standing ROM, gait, sit-to-stand). It under-reads
-motion well out of the vertical plane (e.g. lying down with large hip rotation).
+**Trade-off:** gravity gives only **2 of the 3 rotational DOF** — it is blind to
+rotation about the vertical (gravity) axis. So this method measures the
+**sagittal-plane** component of the angle — ideal for upright knee flexion
+(standing ROM, gait, sit-to-stand). It under-reads motion well out of the vertical
+plane (e.g. lying down with large hip rotation). Note this is an *observability*
+limit, not a mounting one: a fixed mount tilt cancels for planar motion (step 5),
+but tilt combined with out-of-sagittal-plane motion steers part of the true joint
+rotation into the unobservable yaw direction, where gravity cannot see it — the
+one case a gravity-only method fundamentally cannot recover.
 
-### Gravity source: raw accel vs. quaternion
+### Why the quaternion (not the raw accelerometer)
 
-`--gravity-source` chooses where the gravity direction comes from:
-- **`accel` (default)** — the **raw accelerometer**, bypassing the filter
-  entirely. Drift-free and filter-free; a stationary rig reads a flat line. Best
-  for slow / quasi-static motion; noisier during fast limb acceleration.
-- **`quat`** — gravity from the orientation quaternion (uses the filter). Smooth
-  through fast motion because the gyro carries it, and still yaw-immune. Use for
-  dynamic capture.
+Gravity-in-board is taken from the Mahony quaternion, which fuses accel + gyro,
+rather than from the bare accelerometer. During any brisk movement the raw
+accelerometer measures gravity **plus linear acceleration**, so its direction is
+momentarily wrong — the cause of erratic readings (and apparent zeros) right after
+swinging back from a high angle. The fused quaternion lets the **gyro carry** the
+fast part while the accelerometer keeps the tilt drift-free, so the angle stays
+smooth *and* drift-free. The firmware trusts the accelerometer with a **soft
+gate** (`ACC_TRUST_FULL_G` → `ACC_TRUST_ZERO_G`): full weight when near-static,
+ramping to zero as `|accel|` leaves 1 g — always applying *some* correction, so
+the estimate never runs fully open-loop and then snaps back.
 
-### Alternate method: `--method quat`
-
-Relative-quaternion **swing-twist** about a flexion axis learned during the
-sweep. General (any plane) but partly exposed to 6-DOF yaw drift; kept for
-comparison.
+(The raw accelerometer is still streamed and shown as a filter-free cross-check in
+`--monitor`.)
 
 ---
 
@@ -113,10 +183,8 @@ comparison.
 ```
 python knee_collector_uart.py --port PORT [options]
 
-  --monitor                 live bring-up check (raw-accel tilts vs filter angle)
+  --monitor                 live bring-up check (gyro-fused vs raw-accel tilts)
   --raw                     dump raw serial lines with field counts, then exit
-  --method gravity|quat     angle method (default: gravity)
-  --gravity-source accel|quat   gravity source for the gravity method (default: accel)
   --cal-seconds N           straight-and-still zero hold (default 2)
   --sweep-seconds N         calibration-motion window (default 6)
   --out FILE                CSV path (default knee_log.csv)
@@ -175,19 +243,37 @@ recording:
    ruler — was the key diagnostic: the true relative angle must be constant, so
    any drift is pure estimation error.)
 
-4. **"Gravity from the quaternion" inherits a bad quaternion.** When the filter
-   was wandering, *both* angle methods failed together. Reading gravity straight
-   from the **raw accelerometer** (`--gravity-source accel`) bypasses the filter
-   and gives a rock-steady static reading — the decisive fix.
+4. **"Gravity from the quaternion" inherits a bad quaternion.** *While the filter
+   was still wandering* (before finding #1 was fixed), both paths failed together,
+   and reading gravity straight from the **raw accelerometer** was the decisive
+   static fix. Once the handedness reflection was corrected the quaternion tracks
+   properly, and the raw accelerometer's own weakness (finding #5) made it the
+   worse default — see finding #7.
 
-5. **Fast motion corrupts the accel-as-gravity assumption.** Added
-   **accel-magnitude gating**: the filter only applies the accel correction when
-   `|accel|` is within `ACC_GATE_G` (0.15 g) of gravity, letting the gyro carry
-   through quick movement (`--gravity-source quat`).
+5. **Fast motion corrupts the accel-as-gravity assumption.** During any brisk
+   movement the accelerometer reads gravity **plus linear acceleration**, so its
+   direction is momentarily wrong. In the filter this is handled by **accel
+   trust gating**; a bare-accelerometer angle has no such protection and reads
+   erratically (apparent zeros/overshoot) right after swinging back from a high
+   angle.
 
 6. **UART timeouts.** The 30-byte reply is ~0.65 ms at 460800 baud (was ~2.7 ms
    at 115200, which crowded the 8 ms budget and caused dropped "invalid" shank
    samples). Raising `Serial1` to **460800** on both boards restored margin.
+
+7. **Consolidated to one reliable method: gravity-in-board from the fused
+   quaternion.** The project had accumulated four selectable behaviors
+   (`--method gravity|quat` × `--gravity-source accel|quat`) that masked each
+   other's failure modes. With the filter now correct (finding #1), the
+   quaternion-sourced gravity direction is both **smooth through fast motion**
+   (gyro carries) and **drift-free in tilt** (accel corrects) — strictly better
+   than the raw-accel default, whose motion corruption (finding #5) produced the
+   erratic post-flexion readings. The alternate modes and the yaw-prone
+   relative-quaternion swing-twist method were removed. The hard accel gate was
+   also replaced with a **soft gate** (`ACC_TRUST_FULL_G` 0.10 g →
+   `ACC_TRUST_ZERO_G` 0.60 g): trust ramps down with `|accel|` instead of cutting
+   off, so the filter is always partly corrected during motion and never runs
+   open-loop and then snaps back on the way out.
 
 Validation so far: on a rigid ruler, thigh and shank tilts agree; placing the
 shank board at a right angle to the thigh board reads ~90°.
@@ -201,13 +287,14 @@ shank board at a right angle to the thigh board reads ~90°.
 
 ## Known limitations & next steps
 
-- **Sagittal plane only** (gravity method) — see the trade-off above.
+- **Sagittal plane only** — see the trade-off above.
 - **Validate against a protractor** — tape both boards across a hinge, zero
   straight, sweep the range, and check the reading at known angles.
-- **Slow residual yaw drift** remains in the quaternion path (bias instability);
-  the gravity method is unaffected. Per-session re-zero handles it.
-- **Fast dynamic capture** — compare `--gravity-source accel` vs `quat`; if `quat`
-  needs it, tune `TWO_KP` / `ACC_GATE_G`.
+- **Fast dynamic capture** — the gyro-fused gravity direction carries through
+  motion; if very fast reps still lag or overshoot, tune the filter (`TWO_KP`)
+  and the soft gate (`ACC_TRUST_FULL_G` / `ACC_TRUST_ZERO_G`) on both boards.
+- **Per-session re-zero** handles any slow accelerometer/bias offset; hold the
+  leg straight and still at the start of each capture.
 - **Dropouts** — watch the run summary (`valid / filled / missing`); if the link
   is flaky over long wires, drop `Serial1` to 230400 on both boards.
 
