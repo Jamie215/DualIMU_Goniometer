@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+mag_cal.json
+knee_log.csv
