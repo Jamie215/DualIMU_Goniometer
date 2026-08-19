@@ -419,8 +419,43 @@ def _self_test():
     assert abs(_dot3(ga12, (0.0, 0.0, 1.0)) - 1.0) < 1e-6
     print("  parsing + gravity sources OK")
 
+    # --- stream diagnosis: the three failure modes + the healthy case ---
+    assert diagnose_stream(0, 0, 0, '', 'PORT') and 'No data' in \
+        diagnose_stream(0, 0, 0, '', 'PORT')
+    assert 'fields' in diagnose_stream(5, 0, 0, 'X,1,2,3', 'PORT')
+    assert 'slave' in diagnose_stream(5, 5, 0, 'D,...', 'PORT')
+    assert diagnose_stream(5, 5, 3, 'D,...', 'PORT', need_valid=1) is None
+    print("  stream diagnosis OK")
+
     print(f"  example summary line: {h.summary()}")
     print("Self-test PASSED.\n")
+
+
+def diagnose_stream(seen, parsed, valid_count, last_line, port, need_valid=1):
+    """Turn raw-stream tallies into a one-line explanation of why healthy VALID
+    'D' lines aren't arriving, or None once at least `need_valid` have been seen.
+
+    Shared by the CLI's wait_for_stream and the GUI's link-error banner so both
+    say the same thing. The three failure modes map to the three points in the
+    chain: nothing on the wire, wrong/old firmware, or a dead slave link.
+        seen    -- non-empty lines received
+        parsed  -- lines that parsed as a 'D' record
+        valid_count -- parsed records whose shank sample was real
+        last_line   -- most recent non-empty raw line (for the field-count hint)
+    """
+    if valid_count >= need_valid:
+        return None
+    if seen == 0:
+        return (f"No data on {port}. Is the master board plugged in and running? "
+                f"(use --raw to inspect the raw stream)")
+    if parsed == 0:
+        n = len(last_line.split(','))
+        return (f"Receiving data, but it isn't an 18-field 'D' line (last line had "
+                f"{n} fields). Reflash BOTH boards with the current firmware. "
+                f"Last line: {last_line!r}")
+    return ("Master is streaming, but every shank quaternion is the zero sentinel "
+            "-> the slave isn't replying. Check the UART wiring/GND between the two "
+            "boards and that the slave is powered.")
 
 
 def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
@@ -429,9 +464,8 @@ def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
     This is what stops the collector from silently sitting at 'zeroing' forever:
     the calibration timer only advances on parseable lines, so if the firmware,
     the format, or the slave link is wrong we'd otherwise hang with no clue. Here
-    we watch the raw stream and, every few seconds, say exactly what's wrong:
-    no bytes at all, bytes that don't parse (wrong/old firmware), or D lines whose
-    shank quaternion is always zero (slave link down)."""
+    we watch the raw stream and, every few seconds, say exactly what's wrong via
+    diagnose_stream()."""
     ser.reset_input_buffer()   # drop stale buffered bytes so timing starts clean
     seen = parsed = valid = 0
     last_line = ''
@@ -448,18 +482,9 @@ def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
                     valid += 1
 
         if time.time() - last_warn >= warn_every and valid < need_valid:
-            if seen == 0:
-                print(f"  ...no data on {port}. Is the master board plugged in and "
-                      f"running? (run with --raw to inspect the raw stream)")
-            elif parsed == 0:
-                n = len(last_line.split(','))
-                print(f"  ...receiving data, but it isn't an 18-field 'D' line "
-                      f"(last line had {n} fields). Reflash BOTH boards with the "
-                      f"current firmware. Last line: {last_line!r}")
-            else:
-                print("  ...master is streaming, but every shank quaternion is the "
-                      "zero sentinel -> the slave isn't replying. Check the UART "
-                      "wiring/GND between the two boards and that the slave is powered.")
+            msg = diagnose_stream(seen, parsed, valid, last_line, port, need_valid)
+            if msg:
+                print(f"  ...{msg}")
             last_warn = time.time()
     print("Data OK.")
 

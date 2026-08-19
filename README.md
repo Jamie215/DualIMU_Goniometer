@@ -57,6 +57,54 @@ the boards in a precise, repeatable orientation.
 
 ---
 
+## Live GUI (`knee_gui.py`)
+
+For a testing / proof-of-concept session there is a Tkinter + Matplotlib front
+end over the same angle math. It is the easiest way to run a collection:
+
+```
+pip install -r requirements.txt
+python knee_gui.py                 # scan for the master port and go
+python knee_gui.py --simulate      # no hardware: synthetic flexing-knee source
+python knee_gui.py --selftest      # headless: sample-gate + source logic
+```
+
+What it adds over the CLI:
+
+- **Port scan** — probes each serial port for valid `D` lines and picks the
+  master automatically. (Only the master is on USB; a dead slave link shows up
+  as a low shank-valid %, not a second port.)
+- **Consistent 100 Hz** — the jittery ~104 Hz device stream is resampled onto a
+  fixed 10 ms grid, so both the CSV and the plots are a clean 100 Hz record.
+- **Obvious calibration** — a colour-coded banner drives the phases with a live
+  countdown: amber **ZEROING** (hold straight & still) → amber **SWEEP** (bend
+  knee + hip, with a live shank-tilt readout) → green **RUNNING**.
+- **Plots** — knee angle (primary), the two segment inclinations it is built
+  from, and the link RTT. While collecting they show a rolling window; when you
+  **Stop collecting** they switch to the **entire session** (not just the last
+  window) and a pan/zoom/save toolbar becomes usable so you can inspect the
+  frozen trace (Home returns to the full-session view).
+- **Dropout mode (switchable live)** —
+  **Fill** forward-fills short gaps and draws a continuous line;
+  **Gap** keeps only real samples and draws discrete points, so dropouts appear
+  as visible gaps. The CSV records which samples were real in either mode.
+- **Session-based collect / stop / reset** — each **Calibrate & collect** starts
+  a fresh session: a new timestamped CSV, a cleared plot, and calibration from
+  scratch. **Stop collecting** ends it, freezes the display on the last data,
+  and returns to idle. Collecting again is a clean reset — you recalibrate, and
+  a new file is written. (There is no pause/resume: the display only rolls while
+  a session is actually collecting.)
+- **Errors** — a red banner names the exact fault (no data / wrong firmware /
+  dead slave link), using the same diagnosis as the CLI.
+- **Auto-save** — each session auto-saves to `knee_YYYYMMDD_HHMMSS.csv`;
+  **Save copy…** relocates the current one. A crash never loses a session.
+
+The CSV is a superset of the CLI log (adds wall-clock and session time, the two
+inclinations, and the `phase` / `fill_mode` columns), so existing analysis still
+reads it.
+
+---
+
 ## How it works (the math)
 
 Each IMU estimates orientation with a **6-DOF Mahony filter** (accelerometer +
