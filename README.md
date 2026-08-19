@@ -81,9 +81,9 @@ What it adds over the CLI:
   knee + hip, with a live shank-tilt readout) → green **RUNNING**.
 - **Plots** — knee angle (primary), the two segment inclinations it is built
   from, and the link RTT. While collecting they show a rolling window; when you
-  **Stop collecting** they auto-fit the whole session and a pan/zoom/save
-  toolbar becomes usable so you can inspect the frozen trace (Home returns to
-  the full-session view).
+  **Stop collecting** they switch to the **entire session** (not just the last
+  window) and a pan/zoom/save toolbar becomes usable so you can inspect the
+  frozen trace (Home returns to the full-session view).
 - **Dropout mode (switchable live)** —
   **Fill** forward-fills short gaps and draws a continuous line;
   **Gap** keeps only real samples and draws discrete points, so dropouts appear

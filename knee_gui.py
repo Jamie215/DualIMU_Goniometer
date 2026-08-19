@@ -444,7 +444,10 @@ class Sampler(threading.Thread):
         self._lock = threading.Lock()
         self.fill_mode = True
         self.gate = SampleGate(fill_mode=True)
-        self.buf = deque(maxlen=PLOT_N)   # dicts: t, angle, incl_t, incl_s, rtt
+        self.buf = deque(maxlen=PLOT_N)   # bounded ring for the live rolling window
+        # Full-session history (unbounded, one session) so the frozen view after
+        # Stop can show the ENTIRE run, not just the last rolling window.
+        self.full = {'t': [], 'angle': [], 'incl_t': [], 'incl_s': [], 'rtt': []}
         self.current_path = None          # CSV of the session in progress (or last)
 
     def stop(self):
@@ -456,6 +459,7 @@ class Sampler(threading.Thread):
             self.gate.fill_mode = fill
 
     def get_plot_arrays(self):
+        """Live rolling window (bounded)."""
         with self._lock:
             t = [r['t'] for r in self.buf]
             ang = [r['angle'] for r in self.buf]
@@ -463,6 +467,13 @@ class Sampler(threading.Thread):
             is_ = [r['incl_s'] for r in self.buf]
             rtt = [r['rtt'] for r in self.buf]
         return t, ang, it, is_, rtt
+
+    def get_full_arrays(self):
+        """The entire session so far (for the frozen full-run view after Stop)."""
+        with self._lock:
+            fu = self.full
+            return (list(fu['t']), list(fu['angle']), list(fu['incl_t']),
+                    list(fu['incl_s']), list(fu['rtt']))
 
     def valid_pct(self):
         with self._lock:
@@ -476,6 +487,8 @@ class Sampler(threading.Thread):
         f.flush()
         with self._lock:
             self.buf.clear()                       # fresh plot for the new session
+            for v in self.full.values():
+                v.clear()                          # fresh full-session history
             self.gate = SampleGate(fill_mode=self.fill_mode)   # fresh valid% stats
             self.current_path = path
         return f, writer
@@ -513,12 +526,16 @@ class Sampler(threading.Thread):
                         else:                          # zeroing / sweep: no angle yet
                             out_angle, status = None, phase
                             incl_t = incl_s = nan
+                        plot_angle = out_angle if out_angle is not None else nan
                         self.buf.append({
-                            't': t_rel,
-                            'angle': out_angle if out_angle is not None else nan,
-                            'incl_t': incl_t, 'incl_s': incl_s,
-                            'rtt': s['rtt'],
+                            't': t_rel, 'angle': plot_angle,
+                            'incl_t': incl_t, 'incl_s': incl_s, 'rtt': s['rtt'],
                         })
+                        self.full['t'].append(t_rel)
+                        self.full['angle'].append(plot_angle)
+                        self.full['incl_t'].append(incl_t)
+                        self.full['incl_s'].append(incl_s)
+                        self.full['rtt'].append(s['rtt'])
                         fill_mode = self.gate.fill_mode
 
                     tq = s['thigh_q']; sq = s['shank_q']
@@ -829,7 +846,7 @@ class App:
             # autoscale, then stop touching the axes so the toolbar's pan/zoom
             # (and Home) stay put and the trace can be inspected freely.
             if not self._stopped_fitted:
-                t, ang, it, is_, rtt = self.sampler.get_plot_arrays()
+                t, ang, it, is_, rtt = self.sampler.get_full_arrays()
                 if t:
                     self.line_knee.set_data(t, ang)
                     self.line_it.set_data(t, it)
