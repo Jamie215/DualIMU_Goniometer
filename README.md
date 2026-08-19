@@ -57,6 +57,45 @@ the boards in a precise, repeatable orientation.
 
 ---
 
+## Live GUI (`knee_gui.py`)
+
+For a testing / proof-of-concept session there is a Tkinter + Matplotlib front
+end over the same angle math. It is the easiest way to run a collection:
+
+```
+pip install -r requirements.txt
+python knee_gui.py                 # scan for the master port and go
+python knee_gui.py --simulate      # no hardware: synthetic flexing-knee source
+python knee_gui.py --selftest      # headless: sample-gate + source logic
+```
+
+What it adds over the CLI:
+
+- **Port scan** — probes each serial port for valid `D` lines and picks the
+  master automatically. (Only the master is on USB; a dead slave link shows up
+  as a low shank-valid %, not a second port.)
+- **Consistent 100 Hz** — the jittery ~104 Hz device stream is resampled onto a
+  fixed 10 ms grid, so both the CSV and the plots are a clean 100 Hz record.
+- **Obvious calibration** — a colour-coded banner drives the phases with a live
+  countdown: amber **ZEROING** (hold straight & still) → amber **SWEEP** (bend
+  knee + hip, with a live shank-tilt readout) → green **RUNNING**.
+- **Plots** — knee angle (primary), the two segment inclinations it is built
+  from, and the link RTT, on a rolling window.
+- **Dropout mode (switchable live)** —
+  **Fill** forward-fills short gaps and draws a continuous line;
+  **Gap** keeps only real samples and draws discrete points, so dropouts appear
+  as visible gaps. The CSV records which samples were real in either mode.
+- **Pause / errors** — Pause freezes logging (the display stays live); a red
+  banner names the exact fault (no data / wrong firmware / dead slave link).
+- **Auto-save** — a timestamped `knee_YYYYMMDD_HHMMSS.csv` is opened on
+  Connect; **Save copy…** relocates it. A crash never loses a session.
+
+The CSV is a superset of the CLI log (adds wall-clock and session time, the two
+inclinations, and the `phase` / `fill_mode` columns), so existing analysis still
+reads it.
+
+---
+
 ## How it works (the math)
 
 Each IMU estimates orientation with a **6-DOF Mahony filter** (accelerometer +

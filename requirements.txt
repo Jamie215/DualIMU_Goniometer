@@ -1,0 +1,5 @@
+# Core collection (CLI) -- knee_collector_uart.py
+pyserial>=3.5
+
+# Live GUI -- knee_gui.py (Tkinter ships with CPython; matplotlib is extra)
+matplotlib>=3.5
