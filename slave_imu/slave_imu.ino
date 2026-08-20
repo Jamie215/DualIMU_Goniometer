@@ -139,6 +139,15 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
+  // Boot blink: 3 quick flashes on every (re)start. Two diagnostics in one --
+  // seen at plug-in it confirms THIS firmware is flashed; seen MID-SESSION it
+  // means the board just reset (brown-out / fault), which points at slave power
+  // rather than a sensor hang (a hang instead holds the LED solid, below).
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(LED_BUILTIN, HIGH); delay(60);
+    digitalWrite(LED_BUILTIN, LOW);  delay(120);
+  }
+
   if (!IMU.begin()) {
     while (1) { digitalWrite(LED_BUILTIN, HIGH); delay(150);
                 digitalWrite(LED_BUILTIN, LOW);  delay(150); }
