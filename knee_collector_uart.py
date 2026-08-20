@@ -61,7 +61,11 @@ to nearby metal.
 
 Master line format (18 fields):
   D,<t_thigh_us>,<tw>,<tx>,<ty>,<tz>,<tax>,<tay>,<taz>,
-    <t_shank_mid_us>,<sw>,<sx>,<sy>,<sz>,<sax>,<say>,<saz>,<rtt_us>
+    <t_shank_recv_us>,<sw>,<sx>,<sy>,<sz>,<sax>,<say>,<saz>,<age_us>
+The shank board streams continuously; the master reports its freshest packet and,
+in the last field, that packet's AGE in us (parsed below into 'rtt' for continuity
+with older logs -- same units, a link-health number). A stale/absent shank makes
+t_shank_recv and the shank quaternion 0, i.e. an invalid sample.
 
 Usage:
   python knee_collector_uart.py --port /dev/ttyACM0            # collect
@@ -468,8 +472,10 @@ def diagnose_stream(seen, parsed, valid_count, last_line, port, need_valid=1):
                 f"{n} fields). Reflash BOTH boards with the current firmware. "
                 f"Last line: {last_line!r}")
     return ("Master is streaming, but every shank quaternion is the zero sentinel "
-            "-> the slave isn't replying. Check the UART wiring/GND between the two "
-            "boards and that the slave is powered.")
+            "-> no data from the slave. Check that the slave is powered and its LED "
+            "is a fast blink (active); a slow idle blink means it isn't getting the "
+            "master's keepalive -- verify BOTH UART wires (Slave TX->Master RX and "
+            "Master TX->Slave RX) and GND between the boards.")
 
 
 def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
@@ -486,6 +492,13 @@ def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
     last_warn = time.time()
     while valid < need_valid:
         line = ser.readline().decode('ascii', 'ignore').strip()
+        if line.startswith('#'):
+            # Surface the master's banners (firmware id, "calibrating, hold still",
+            # gyro bias). Seeing them means the board is alive and starting a
+            # collection, so reset the no-data timer instead of warning spuriously.
+            print(f"  {line}")
+            last_warn = time.time()
+            continue
         if line:
             seen += 1
             last_line = line
@@ -664,16 +677,32 @@ def monitor(port, baud=115200, zero_seconds=1.5):
           "cross-check; rel = relative-quaternion angle (drift probe). Ctrl-C to stop.")
 
     n = nbad = 0
+    prev_t_thigh = None
     try:
         while True:
             rec = parse_line(ser.readline().decode('ascii', 'ignore'))
             if rec is None:
                 continue
             n += 1
+            # Master loop period, from ITS own clock (t_thigh_us). This localizes a
+            # stall: if the shank goes stale AND this jumps to seconds, the MASTER
+            # froze (e.g. USB print blocking on a slow host) -- both boards' data
+            # freeze together. If this stays ~10 ms while the shank is stale, the
+            # master is running fine and the SLAVE went silent (reset / power / sensor).
+            dthigh_ms = 0.0
+            if prev_t_thigh is not None:
+                dthigh_ms = ((rec['t_thigh'] - prev_t_thigh) & 0xFFFFFFFF) / 1000.0
+            prev_t_thigh = rec['t_thigh']
             if not is_valid(rec):
                 nbad += 1
-                print(f"\r  [shank INVALID]  valid:{100*(n-nbad)/n:4.0f}%  "
-                      f"rtt:{rec['rtt']:5d}us      ", end='')
+                # Field 18 is now the freshest shank packet's AGE (us): the slave
+                # streams and the master reports how old its newest packet is.
+                # Invalid means nothing fresh enough this cycle -- age 0 = no packet
+                # yet (link/power/wiring), else the slave has stalled past the
+                # firmware's stale window.
+                cause = 'no packet yet' if rec['rtt'] == 0 else 'slave stalled'
+                print(f"\r  [shank INVALID: {cause:14s}]  valid:{100*(n-nbad)/n:4.0f}%  "
+                      f"age:{rec['rtt']:8d}us  master dt:{dthigh_ms:7.1f}ms      ", end='')
                 continue
             it = _incl_from_zero(gravity_from_quat(rec, 'thigh'), d_t)
             is_ = _incl_from_zero(gravity_from_quat(rec, 'shank'), d_s)
@@ -682,8 +711,8 @@ def monitor(port, baud=115200, zero_seconds=1.5):
             rel = total_angle_deg(q_mul(q_conj(q_rel0),
                                         relative_quaternion(rec['thigh_q'], rec['shank_q'])))
             print(f"\r  thigh:{it:5.1f} shank:{is_:5.1f}  accel(t/s):{at:5.1f}/{as_:5.1f}"
-                  f"  rel:{rel:5.1f}  valid:{100*(n-nbad)/n:4.0f}%  rtt:{rec['rtt']:5d}us  ",
-                  end='')
+                  f"  rel:{rel:5.1f}  valid:{100*(n-nbad)/n:4.0f}%  age:{rec['rtt']:5d}us"
+                  f"  master dt:{dthigh_ms:5.1f}ms  ", end='')
     except KeyboardInterrupt:
         print("\nMonitor stopped.")
     finally:

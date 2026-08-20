@@ -14,17 +14,30 @@
  * negate x of accel AND gyro to restore det +1. Without this the gyro's rotation
  * sense is mirrored vs the accel and the filter wanders.
  *
- * Slave reply packet (30 bytes):
+ * The shank board STREAMS its state at a fixed 50 Hz; this board is a passive
+ * listener. Each loop it drains its UART buffer, keeping the freshest complete
+ * packet, and emits a merged PC line at 50 Hz -- it never blocks waiting on the
+ * slave, so a slave stall just ages the last packet instead of dropping a sample.
+ * The lower rate (down from ~104 Hz) leaves generous link + USB timing margin.
+ *
+ * Slave stream packet (30 bytes):
  *   [0] 0xAA header
  *   [1..16]  float q0..q3        (LE, w,x,y,z)
  *   [17..28] float ax,ay,az      (LE, g, handedness-corrected)
  *   [29] XOR checksum of [1..28]
  *
  * PC line (18 fields):
- *   D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,t_shank_mid_us,sw,sx,sy,sz,sax,say,saz,rtt_us
- * On a bad/missing reply, shank quaternion+accel and midpoint are 0.
+ *   D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us
+ * The last field is the freshest shank packet's AGE in us (0 if none yet). When the
+ * newest packet is older than SHANK_STALE_US the shank fields and its timestamp are
+ * 0, so the collector marks the sample invalid and forward-fills it.
  *
- * Wiring: Master TX(D1)->Slave RX(D0), Master RX(D0)<-Slave TX(D1), GND<->GND.
+ * Collect-on-demand: the boards run their IMUs only while a collection is active
+ * (this board's USB port is open). The master forwards a keepalive to the slave so
+ * both run in lockstep and both idle when the port closes -- nothing runs unobserved.
+ *
+ * Wiring (BOTH directions needed): Slave TX(D1)->Master RX(D0) for the stream, and
+ * Master TX(D1)->Slave RX(D0) for the keepalive, plus GND<->GND.
  */
 
 #include "Arduino_BMI270_BMM150.h"
@@ -49,7 +62,29 @@ const float BIAS_SANITY_DPS = 3.0f;
 const float ACC_TRUST_FULL_G = 0.10f;   // within this of 1 g -> trust accel fully
 const float ACC_TRUST_ZERO_G = 0.60f;   // beyond this -> gyro only (no correction)
 
-const unsigned long SLAVE_TIMEOUT_US = 8000;
+// The shank streams a packet every ~20 ms (50 Hz). We treat the newest packet as a
+// live shank sample until it is older than this; past it, the slave is presumed
+// stalled and the sample is emitted invalid for the collector to fill. 30 ms is ~1.5
+// packet intervals: it absorbs normal phase jitter without lying about the data
+// (shank orientation barely moves in 30 ms), while flagging a dead slave promptly.
+const unsigned long SHANK_STALE_US = 30000;
+
+// Fixed PC output rate (the 50 Hz baseline). The filters still run at the sensor's
+// full rate for smoothness, but we emit ONE merged line every EMIT_PERIOD_US. A
+// lower collection rate halves link + USB pressure and leaves generous timing
+// margin, and 50 Hz is far more than knee ROM needs (it's resampled PC-side anyway).
+const unsigned long EMIT_PERIOD_US = 20000;   // 50 Hz
+unsigned long lastEmitUs = 0;
+float thighAx = 0, thighAy = 0, thighAz = 1;  // latest thigh raw accel, cached for the emit
+
+// Collect-on-demand. The boards run the IMUs only while a collection is active,
+// not free-running from power. "Active" = the USB port is open (a host -- the
+// collector, the GUI, even the Serial Monitor -- has it open), detected via
+// `Serial`. On start we calibrate + seed fresh; while active we forward a keepalive
+// to the slave so it runs in lockstep; on port close everything idles.
+bool collecting = false;
+unsigned long lastKeepAliveMs = 0;
+const unsigned long KEEPALIVE_MS = 200;       // how often to poke the slave while active
 
 // Read sensors with the reflection fixed (negate x -> right-handed frame).
 inline void readAccel(float &ax, float &ay, float &az) {
@@ -134,23 +169,40 @@ void mahonyUpdate(float gx, float gy, float gz,
 
 void setup() {
   Serial.begin(115200);
-  Serial1.begin(460800);        // fast board-to-board link (must match slave)
+  Serial1.begin(115200);        // board-to-board link (must match slave). 115200,
+                                // not 460800: a 30-byte packet at 50 Hz needs only
+                                // ~12 kbaud, and the two boards clock this async link
+                                // off independent oscillators that drift apart as they
+                                // warm -- the lower rate keeps ample timing margin so
+                                // framing errors don't grow over a session.
   while (!Serial) { ; }
+
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
   if (!IMU.begin()) {
     Serial.println("ERR,IMU init failed");
     while (1) { ; }
   }
+  Serial.println("# MASTER fw: gated-50hz (collect while USB open; shank keepalive-gated)");
   Serial.println("# MASTER cols: D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,"
-                 "t_shank_mid_us,sw,sx,sy,sz,sax,say,saz,rtt_us");
+                 "t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us");
+  lastMicros = micros();
+  // No IMU calibration here -- it happens fresh in startCollecting(), so each
+  // session gets a clean bias and the sensor isn't run while nothing is observing.
+}
 
-  calibrateGyroBias();                 // keep the board STILL at startup
+// Begin a collection: tell the slave to start (so it calibrates in parallel),
+// then calibrate + seed this board. Held-still assumption applies here, not at boot.
+void startCollecting() {
+  Serial1.write('S');                  // wake the slave (it calibrates in parallel)
+  Serial.println("# collecting: calibrating, hold still ~3 s");
+  calibrateGyroBias();
   Serial.print("# master gyro bias dps: ");
   Serial.print(gyroBias[0], 3); Serial.print(',');
   Serial.print(gyroBias[1], 3); Serial.print(',');
   Serial.println(gyroBias[2], 3);
 
-  lastMicros = micros();
   unsigned long t0 = millis();
   while (!IMU.accelerationAvailable() && millis() - t0 < 2000) { ; }
   if (IMU.accelerationAvailable()) {
@@ -158,66 +210,125 @@ void setup() {
     readAccel(ax, ay, az);
     seedFromAccel(ax, ay, az);
   }
+  lastMicros = micros();
+  lastEmitUs = micros();
+  collecting = true;
+  digitalWrite(LED_BUILTIN, HIGH);     // lit = collecting
 }
 
-// Returns midpoint timestamp on success (fills q[4]/a[3]/rtt), or 0 on failure.
-unsigned long pollSlave(float q[4], float a[3], unsigned long &rtt) {
-  while (Serial1.available()) Serial1.read();
-  unsigned long tReq = micros();
-  Serial1.write('R');
+void stopCollecting() {
+  Serial1.write('X');                  // tell the slave to idle
+  collecting = false;
+  digitalWrite(LED_BUILTIN, LOW);      // dark = idle
+}
 
-  uint8_t pkt[30];
-  int idx = 0;
-  while (idx < 30 && (micros() - tReq) < SLAVE_TIMEOUT_US) {
-    if (Serial1.available()) pkt[idx++] = Serial1.read();
+// Freshest shank state received from the stream, plus when (master clock) it was
+// parsed. shankRecvUs == 0 until the first good packet arrives.
+float shankQ[4] = {0, 0, 0, 0};
+float shankA[3] = {0, 0, 0};
+unsigned long shankRecvUs = 0;
+
+// Persistent frame-assembly state for the free-running stream. We resync on the
+// 0xAA header and validate the XOR checksum, so a lost/extra byte costs one frame
+// (checksum fail -> drop -> resync to the next header), never a lasting desync.
+uint8_t rxBuf[30];
+int rxHave = 0;
+
+// Non-blocking: consume every byte currently buffered, updating the cache with the
+// LAST complete, checksum-good packet. Called often so the UART buffer never backs
+// up; whatever the slave streamed while we were busy is waiting here, not lost.
+void pumpShankStream() {
+  while (Serial1.available()) {
+    uint8_t b = Serial1.read();
+    if (rxHave == 0) {
+      if (b == 0xAA) { rxBuf[0] = b; rxHave = 1; }   // wait for a header to start
+    } else {
+      rxBuf[rxHave++] = b;
+      if (rxHave == 30) {
+        uint8_t cs = 0;
+        for (int i = 1; i <= 28; i++) cs ^= rxBuf[i];
+        if (cs == rxBuf[29]) {                        // good frame -> update cache
+          memcpy(shankQ, &rxBuf[1], 16);
+          memcpy(shankA, &rxBuf[17], 12);
+          shankRecvUs = micros();
+        }
+        rxHave = 0;   // start the next frame (bad checksum just resyncs on 0xAA)
+      }
+    }
   }
-  unsigned long tResp = micros();
-  if (idx < 30 || pkt[0] != 0xAA) return 0;
-  uint8_t cs = 0;
-  for (int i = 1; i <= 28; i++) cs ^= pkt[i];
-  if (cs != pkt[29]) return 0;
-  memcpy(q, &pkt[1], 16);
-  memcpy(a, &pkt[17], 12);
-  rtt = tResp - tReq;
-  return (tReq + tResp) / 2;
 }
 
 void loop() {
-  if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
-    float ax, ay, az, gx, gy, gz;
-    readAccel(ax, ay, az);
-    readGyro(gx, gy, gz);              // deg/s, handedness-corrected
-    gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
+  // Collect only while a host has the USB port open. Closing it idles both boards
+  // (the slave via the keepalive timing out) so the IMUs aren't run unobserved.
+  if (!Serial) {
+    if (collecting) stopCollecting();
+    return;
+  }
+  if (!collecting) startCollecting();
 
-    unsigned long now = micros();
-    float dt = (now - lastMicros) * 1e-6f;
-    lastMicros = now;
-    if (dt <= 0 || dt > 0.5f) dt = 1.0f / 104.0f;
+  // Keep the slave awake while we're collecting (it idles if these stop arriving).
+  if (millis() - lastKeepAliveMs >= KEEPALIVE_MS) {
+    lastKeepAliveMs = millis();
+    Serial1.write('S');
+  }
 
-    mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+  pumpShankStream();   // keep draining the shank stream
 
-    float sq[4] = {0, 0, 0, 0};
-    float sa[3] = {0, 0, 0};
-    unsigned long rtt = 0;
-    unsigned long sMid = pollSlave(sq, sa, rtt);
+  // Sample the thigh IMU, filter, and emit -- all at a fixed 50 Hz (symmetric with
+  // the slave; neither board runs faster than the other).
+  unsigned long tnow = micros();
+  if (tnow - lastEmitUs >= EMIT_PERIOD_US) {
+    lastEmitUs = tnow;
+
+    if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
+      float ax, ay, az, gx, gy, gz;
+      readAccel(ax, ay, az);
+      readGyro(gx, gy, gz);           // deg/s, handedness-corrected
+      gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
+      thighAx = ax; thighAy = ay; thighAz = az;   // cache raw accel for the emit
+
+      float dt = (tnow - lastMicros) * 1e-6f;
+      lastMicros = tnow;
+      if (dt <= 0 || dt > 0.5f) dt = 1.0f / 50.0f;
+
+      mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+    }
+
+    pumpShankStream();                // grab the freshest packet before emitting
+    // Age the packet against a timestamp taken AFTER the final pump: that pump can
+    // parse a packet whose micros() stamp is later than tnow, and an unsigned
+    // subtraction would underflow and look stale. Fail SAFE: clamp to 0 in that
+    // case (and across the ~71 min micros() rollover) instead of flagging good data.
+    unsigned long tRef = micros();
+    unsigned long age = (shankRecvUs == 0 || tRef < shankRecvUs) ? 0
+                                                                 : (tRef - shankRecvUs);
+    bool shankFresh = (shankRecvUs != 0) && (age <= SHANK_STALE_US);
 
     Serial.print("D,");
-    Serial.print(now);      Serial.print(',');
-    Serial.print(q0, 4);    Serial.print(',');
-    Serial.print(q1, 4);    Serial.print(',');
-    Serial.print(q2, 4);    Serial.print(',');
-    Serial.print(q3, 4);    Serial.print(',');
-    Serial.print(ax, 4);    Serial.print(',');
-    Serial.print(ay, 4);    Serial.print(',');
-    Serial.print(az, 4);    Serial.print(',');
-    Serial.print(sMid);     Serial.print(',');
-    Serial.print(sq[0], 4); Serial.print(',');
-    Serial.print(sq[1], 4); Serial.print(',');
-    Serial.print(sq[2], 4); Serial.print(',');
-    Serial.print(sq[3], 4); Serial.print(',');
-    Serial.print(sa[0], 4); Serial.print(',');
-    Serial.print(sa[1], 4); Serial.print(',');
-    Serial.print(sa[2], 4); Serial.print(',');
-    Serial.println(rtt);
+    Serial.print(tnow);       Serial.print(',');
+    Serial.print(q0, 4);      Serial.print(',');
+    Serial.print(q1, 4);      Serial.print(',');
+    Serial.print(q2, 4);      Serial.print(',');
+    Serial.print(q3, 4);      Serial.print(',');
+    Serial.print(thighAx, 4); Serial.print(',');
+    Serial.print(thighAy, 4); Serial.print(',');
+    Serial.print(thighAz, 4); Serial.print(',');
+    // Shank block: freshest packet if within SHANK_STALE_US, else the zero sentinel
+    // (timestamp + quaternion + accel all 0) so the collector marks it invalid.
+    if (shankFresh) {
+      Serial.print(shankRecvUs); Serial.print(',');
+      Serial.print(shankQ[0], 4); Serial.print(',');
+      Serial.print(shankQ[1], 4); Serial.print(',');
+      Serial.print(shankQ[2], 4); Serial.print(',');
+      Serial.print(shankQ[3], 4); Serial.print(',');
+      Serial.print(shankA[0], 4); Serial.print(',');
+      Serial.print(shankA[1], 4); Serial.print(',');
+      Serial.print(shankA[2], 4); Serial.print(',');
+    } else {
+      Serial.print(0); Serial.print(',');   // t_shank_recv_us
+      for (int i = 0; i < 7; i++) { Serial.print(0); Serial.print(','); }  // q+accel
+    }
+    Serial.println(age);      // freshest shank packet age (us); 0 if none yet
   }
 }

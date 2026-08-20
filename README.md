@@ -2,9 +2,9 @@
 
 Two Arduino Nano 33 BLE Rev2 boards (one on the thigh, one on the shank) measure
 knee flexion angle. Each board runs a 6-DOF orientation filter; the **shank
-board (slave)** answers the **thigh board (master)** over a wired UART link, and
-the master streams both segments' data to a PC, where `knee_collector_uart.py`
-computes and logs the knee angle.
+board (slave)** streams its state to the **thigh board (master)** over a wired UART
+link, and the master merges both segments and streams them to a PC, where
+`knee_collector_uart.py` computes and logs the knee angle.
 
 The design goal is a **placement-independent** angle: you should not have to mount
 the boards in a precise, repeatable orientation.
@@ -15,12 +15,14 @@ the boards in a precise, repeatable orientation.
 
 - 2× **Arduino Nano 33 BLE Rev2** (onboard **BMI270** accel+gyro; BMM150
   magnetometer is present but **unused**).
-- UART between the boards (`Serial1`, **460800 baud**):
+- UART between the boards (`Serial1`, **115200 baud**), **both directions wired**:
+  the slave streams data to the master, and the master sends a keepalive to the
+  slave so it only runs during a collection (see "Collect-on-demand" below):
 
   ```
-  Master TX (D1) ->  Slave RX (D0)
-  Master RX (D0) <-  Slave TX (D1)
-  Master GND    <->  Slave GND
+  Slave TX (D1)  ->  Master RX (D0)     # shank data stream
+  Master TX (D1) ->  Slave RX (D0)      # keepalive / start-stop
+  Slave GND     <->  Master GND
   ```
 - Master connects to the PC over USB.
 - Mount convention used in testing: board long axis along the limb long axis,
@@ -273,22 +275,42 @@ rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
 
 ## Data format / wire protocol
 
-**Slave → master reply (binary, 30 bytes):**
+**Slave → master stream (binary, 30 bytes/packet, ~104 Hz):**
 ```
 [0]      0xAA header
 [1..16]  float q0..q3   (little-endian, w,x,y,z)
 [17..28] float ax,ay,az (little-endian, g, handedness-corrected)
 [29]     XOR checksum of bytes [1..28]
 ```
-Master requests with a single `'R'` byte and reads exactly 30 bytes within
-`SLAVE_TIMEOUT_US` (8 ms); the slave sample is bracketed at `(t_req+t_resp)/2`.
+**Collect-on-demand & rate.** The boards run their IMUs only while a collection is
+active, so nothing runs unobserved. "Active" = the master's **USB port is open** (the
+collector, GUI, or even the Serial Monitor holds it) — no PC-side command needed. On
+start the master calibrates + seeds fresh and forwards a **keepalive** to the slave
+(over `Master TX -> Slave RX`); the slave calibrates and streams while the keepalive
+arrives and idles when it stops (port closed / master reset). Both boards emit at a
+fixed **50 Hz** (down from ~104 Hz) for generous link + USB timing margin; the slave
+also self-heals a bad low-rate sensor start by re-initializing (no manual reset). LED:
+master lit = collecting; slave fast blink = active, slow blink = idle, solid = sensor
+stalled, 3 flashes = boot.
+
+The shank board **streams** its packets while active; it is not polled. The master is
+a passive listener on the data line: each loop it drains its UART buffer, **resyncs on the `0xAA`
+header**, validates the checksum, and keeps the freshest complete packet — it never
+blocks on the slave. A lost/extra byte fails one checksum and resyncs on the next
+header, so a glitch costs one packet, never a lasting desync. The master timestamps
+each packet on its own clock when parsed; if the freshest packet is older than
+`SHANK_STALE_US` (30 ms) the shank is reported invalid (zeros) for the collector to
+forward-fill. The line's last field is that packet's **age** in µs — small is
+healthy, large (or a run of invalids) means the slave has stalled.
 
 **Master → PC line (text, 18 fields):**
 ```
-D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,t_shank_mid_us,sw,sx,sy,sz,sax,say,saz,rtt_us
+D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us
 ```
-On a bad/missing slave reply, the shank fields and midpoint are `0`; the collector
-marks such samples invalid (and short gaps are forward-filled).
+When the freshest shank packet is stale/absent, `t_shank_recv_us` and the shank
+fields are `0`; the collector marks such samples invalid (and short gaps are
+forward-filled). `age_us` is the freshest shank packet's age (the CSV keeps the
+`rtt_us` column name for continuity — same units, a link-health number).
 
 ---
 
@@ -332,9 +354,33 @@ recording:
    erratically (apparent zeros/overshoot) right after swinging back from a high
    angle.
 
-6. **UART timeouts.** The 30-byte reply is ~0.65 ms at 460800 baud (was ~2.7 ms
-   at 115200, which crowded the 8 ms budget and caused dropped "invalid" shank
-   samples). Raising `Serial1` to **460800** on both boards restored margin.
+6. **Shank dropouts that grow over a session — traced in three steps.** The symptom
+   was shank samples going invalid more and more as a session ran, with the link
+   round-trip climbing alongside. Diagnosing it took three passes, each of which
+   ruled something out:
+
+   - **Framing desync.** The board-to-board reply was read as a fixed 30 bytes with
+     no header resync, so one lost/extra byte on the async link shifted every
+     following packet by one, and the misalignment was self-sustaining. **Fix:**
+     resync on the `0xAA` header + validate the checksum, so a glitch costs one
+     packet, not a run. Also returned `Serial1` from `460800` to **115200** for ~4×
+     the per-byte timing margin (a 30-byte packet at 104 Hz needs only ~25 kbaud, so
+     the lower rate costs nothing and drifts far less as the boards self-heat). An
+     earlier pass had *raised* the rate to `460800` to shrink time-on-wire, which
+     masked the desync but added the thermal fragility.
+   - **Too-tight response window.** With framing fixed, `valid%` rose to ~93% but
+     the remaining drops showed the request round-trip hitting the *full* timeout —
+     the slave producing nothing in time, not corrupt bytes. Root cause: the slave
+     only answered a poll between chunks of its own loop, and the mbed RTOS adds
+     sporadic multi-ms stalls, so a reply could arrive after any fixed deadline.
+   - **The real fix — stream instead of poll.** Widening the deadline is an arms
+     race (and every stall stalls the master). Instead the slave now **streams** its
+     packet continuously and the master reads the freshest one already in its UART
+     buffer, never blocking. A slave stall no longer drops a sample — it just ages
+     the newest packet; if that age exceeds `SHANK_STALE_US` (30 ms) the sample is
+     marked invalid and the collector forward-fills it. This decouples the master's
+     rate from the slave's latency entirely. Line field 18 is now the packet **age**
+     (`age_us`); a large age or a run of invalids localizes a stalled/dead slave.
 
 7. **Consolidated to one reliable method: gravity-in-board from the fused
    quaternion.** The project had accumulated four selectable behaviors
@@ -378,7 +424,7 @@ shank board at a right angle to the thigh board reads ~90°.
 ## Files
 
 ```
-master_imu/master_imu.ino   thigh board: 6-DOF filter, polls slave, streams to PC
-slave_imu/slave_imu.ino     shank board: 6-DOF filter, answers 'R' over UART
+master_imu/master_imu.ino   thigh board: 6-DOF filter, reads slave stream, streams to PC
+slave_imu/slave_imu.ino     shank board: 6-DOF filter, streams packets over UART
 knee_collector_uart.py      PC collector: calibration, angle math, CSV, --selftest
 ```

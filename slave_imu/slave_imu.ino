@@ -2,13 +2,21 @@
  * KNEE ANGLE - SLAVE (shank)  [UART, 6-DOF quaternion + raw gravity]
  * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270; magnetometer unused)
  *
- * On request ('R') replies with its orientation quaternion AND its raw
- * accelerometer vector (see master_imu.ino for the packet + the handedness note).
+ * STREAMS its orientation quaternion AND raw accelerometer vector at a fixed 50 Hz
+ * while a collection is active -- it does NOT wait to be polled. The master reads
+ * whatever complete packets are already in its UART buffer and uses the freshest,
+ * never blocking on the slave; a slave stall just ages the newest packet.
  *
- * Reply packet (30 bytes):
+ * Collect-on-demand: the slave runs the IMU only while the master's keepalive ('S')
+ * is arriving (i.e. while the PC has the master's USB port open). It idles when the
+ * keepalive stops or on 'X', so the sensor isn't run while nothing is observing.
+ *
+ * Packet (30 bytes), framed for resync on a free-running stream:
  *   [0] 0xAA, [1..16] float q0..q3, [17..28] float ax,ay,az, [29] XOR of [1..28]
+ * (See master_imu.ino for the handedness note.)
  *
- * Wiring: Slave TX(D1)->Master RX(D0), Slave RX(D0)<-Master TX(D1), GND<->GND.
+ * Wiring (BOTH directions): Slave TX(D1)->Master RX(D0) for the stream, and
+ * Master TX(D1)->Slave RX(D0) for the keepalive, plus GND<->GND.
  */
 
 #include "Arduino_BMI270_BMM150.h"
@@ -29,6 +37,52 @@ const float BIAS_SANITY_DPS = 3.0f;
 // gyro carries the fast part -- no open-loop drift/snap-back after a fast move.
 const float ACC_TRUST_FULL_G = 0.10f;
 const float ACC_TRUST_ZERO_G = 0.60f;
+
+// Sensor-stall recovery. The board streams only while the BMI270 keeps asserting
+// new data; if data-ready gets stuck the loop would otherwise spin silently. So:
+// while active, if no IMU sample arrives for STALL_WARN_MS, show it on the LED and
+// periodically re-init the sensor to recover in ms rather than waiting it out.
+const unsigned long STALL_WARN_MS   = 250;
+const unsigned long REINIT_EVERY_MS = 500;
+unsigned long lastSampleMs = 0;
+unsigned long lastReinitMs = 0;
+
+// Low-rate self-heal. The BMI270 sometimes initializes at a wrong, low ODR (~10 Hz)
+// with bad data. While active, if fewer than MIN_SAMPLES_PER_WINDOW samples stream
+// in a RATE_WINDOW_MS window, force a full sensor re-init -- so a bad start heals
+// itself within ~1 s instead of needing a manual board reset.
+const unsigned long RATE_WINDOW_MS         = 1000;
+const unsigned long MIN_SAMPLES_PER_WINDOW = 30;   // healthy ~50 stream; below this = degraded
+unsigned long sampleCount  = 0;
+unsigned long rateWindowMs = 0;
+
+// Fixed stream rate (the 50 Hz baseline). The filter still updates on every IMU
+// sample for smoothness, but we transmit at most one packet per STREAM_PERIOD_US.
+// Halving the packets on the wire is the point: far more timing margin on the async
+// board-to-board link, and 50 Hz is ample for knee ROM.
+const unsigned long STREAM_PERIOD_US = 20000;   // 50 Hz
+unsigned long lastSendUs = 0;
+
+// Collect-on-demand. The slave runs the IMU only while the master says a collection
+// is active. The master forwards a keepalive ('S') while its USB port is open; the
+// slave activates on it and idles once the keepalive stops arriving (port closed,
+// master reset, or unplugged). 'X' idles immediately. This keeps the sensor from
+// running while nothing is observing, and keeps both boards in lockstep.
+bool active = false;
+unsigned long lastCmdMs = 0;
+const unsigned long CMD_TIMEOUT_MS = 1000;   // idle if no keepalive within this
+
+// Health indicator on the built-in LED (pin 13). State is encoded as a blink
+// pattern so a single LED stays unambiguous:
+//   fast HEARTBEAT blink    = active, streaming
+//   slow blink              = idle, waiting for a collection to start
+//   SOLID on                = sensor stalled (loop running, re-init firing)
+//   3 fast flashes at start = boot -- confirms this firmware is flashed
+//   OFF / frozen            = loop not running (hard fault) or unpowered
+const unsigned long HEARTBEAT_MS = 150;   // active blink half-period (~3 Hz)
+const unsigned long IDLE_BLINK_MS = 700;  // idle blink half-period (slow)
+bool ledState = false;
+unsigned long lastBlinkMs = 0;
 
 // Arduino_BMI270_BMM150 returns a REFLECTED (left-handed) frame; negate x of
 // accel AND gyro to restore a right-handed frame for the quaternion filter.
@@ -112,25 +166,63 @@ void mahonyUpdate(float gx, float gy, float gz,
 }
 
 void setup() {
-  Serial1.begin(460800);        // fast board-to-board link (must match master)
+  Serial1.begin(115200);        // board-to-board link (must match master). Lowered
+                                // from 460800 for async-clock timing margin -- see
+                                // master_imu.ino for the rationale.
 
-  if (!IMU.begin()) {
-    pinMode(LED_BUILTIN, OUTPUT);
-    while (1) { digitalWrite(LED_BUILTIN, HIGH); delay(150);
-                digitalWrite(LED_BUILTIN, LOW);  delay(150); }
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+
+  // Boot blink: 3 fast flashes on every (re)start. Seen at plug-in it confirms
+  // THIS firmware is flashed; seen MID-SESSION it means the board just reset
+  // (brown-out / fault -> slave power), vs. a sensor hang which holds it SOLID.
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(LED_BUILTIN, HIGH); delay(60);
+    digitalWrite(LED_BUILTIN, LOW);  delay(120);
   }
 
-  calibrateGyroBias();                 // keep the board STILL at startup
+  if (!IMU.begin()) {
+    while (1) { digitalWrite(LED_BUILTIN, HIGH); delay(150);   // fast blink = IMU init failed
+                digitalWrite(LED_BUILTIN, LOW);  delay(150); }
+  }
+  // No calibration or streaming at boot -- the board idles until the master signals
+  // a collection has begun (see activate()), so the IMU isn't run while unobserved.
+}
 
+// Begin an active collection: calibrate the gyro bias (board should be still) and
+// seed orientation from gravity, fresh for this session.
+void activate() {
+  calibrateGyroBias();
+  reinitSeed(2000);
+  lastSampleMs  = millis();
+  rateWindowMs  = millis();
+  lastSendUs    = micros();
+  lastCmdMs     = millis();            // set AFTER the ~3 s calibrate so we don't instantly time out
+  active = true;
+}
+
+// Wait (up to timeout) for the accelerometer to produce data, then seed the
+// orientation from gravity. Shared by startup and the self-heal re-init.
+void reinitSeed(unsigned long timeout_ms) {
   lastMicros = micros();
   unsigned long t0 = millis();
-  while (!IMU.accelerationAvailable() && millis() - t0 < 2000) { ; }
+  while (!IMU.accelerationAvailable() && millis() - t0 < timeout_ms) { ; }
   if (IMU.accelerationAvailable()) {
     float ax, ay, az;
     readAccel(ax, ay, az);
     accX = ax; accY = ay; accZ = az;
     seedFromAccel(ax, ay, az);
   }
+}
+
+// Full sensor re-init: re-configure the BMI270 (restores its default output rate
+// if it came up wrong) and re-seed. This is what a manual board reset was doing
+// by hand; the watchdogs call it automatically.
+void reinitIMU() {
+  IMU.begin();
+  reinitSeed(300);
+  lastSampleMs = millis();
+  lastReinitMs = millis();
 }
 
 inline void sendPacket() {
@@ -146,36 +238,72 @@ inline void sendPacket() {
   uint8_t cs = 0;
   for (int i = 1; i <= 28; i++) cs ^= pkt[i];
   pkt[29] = cs;
-  Serial1.write(pkt, 30);
-}
-
-inline void serviceRequest() {
-  if (Serial1.available()) {
-    char c = Serial1.read();
-    if (c == 'R') sendPacket();
-  }
+  Serial1.write(pkt, 30);           // ~30 B at 50 Hz = ~13% of the 115200 link
 }
 
 void loop() {
-  serviceRequest();  // answer fast, top priority
+  // Follow the master's collect/idle commands. 'S' (start / keepalive) keeps us
+  // active; 'X' idles immediately; no keepalive within CMD_TIMEOUT_MS also idles.
+  while (Serial1.available()) {
+    char c = Serial1.read();
+    if (c == 'S') { lastCmdMs = millis(); if (!active) activate(); }
+    else if (c == 'X') { active = false; }
+  }
 
-  if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
+  // Idle when not in a collection: don't touch the IMU, just show a slow blink.
+  if (!active || (millis() - lastCmdMs > CMD_TIMEOUT_MS)) {
+    active = false;
+    if (millis() - lastBlinkMs >= IDLE_BLINK_MS) {
+      lastBlinkMs = millis();
+      ledState = !ledState;
+      digitalWrite(LED_BUILTIN, ledState);
+    }
+    return;
+  }
+
+  // Rate watchdog: once per window, re-init the sensor if too few samples streamed.
+  // Heals a bad low-rate state (~10 Hz) automatically, no manual reset needed.
+  unsigned long tw = millis();
+  if (tw - rateWindowMs >= RATE_WINDOW_MS) {
+    if (sampleCount < MIN_SAMPLES_PER_WINDOW) reinitIMU();
+    sampleCount = 0;
+    rateWindowMs = millis();
+  }
+
+  // Active: process + stream at a fixed 50 Hz (at most one packet per STREAM_PERIOD_US).
+  if ((micros() - lastSendUs) >= STREAM_PERIOD_US
+      && IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
+    lastSendUs = micros();
     float ax, ay, az, gx, gy, gz;
     readAccel(ax, ay, az);
-    serviceRequest();
     readGyro(gx, gy, gz);             // deg/s, handedness-corrected
     gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
-    serviceRequest();
 
-    accX = ax; accY = ay; accZ = az;  // cache raw gravity for the reply
+    accX = ax; accY = ay; accZ = az;  // cache raw gravity for the packet
 
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;
     lastMicros = now;
-    if (dt <= 0 || dt > 0.5f) dt = 1.0f / 104.0f;
+    if (dt <= 0 || dt > 0.5f) dt = 1.0f / 50.0f;
 
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+    sendPacket();                     // stream the freshly-updated orientation
+
+    sampleCount++;
+    lastSampleMs = millis();
+    // active: fast heartbeat blink (non-blocking toggle)
+    if (millis() - lastBlinkMs >= HEARTBEAT_MS) {
+      lastBlinkMs = millis();
+      ledState = !ledState;
+      digitalWrite(LED_BUILTIN, ledState);
+    }
+    return;
   }
 
-  serviceRequest();
+  // Active but no new IMU data for a while -> real stall: make it visible and recover.
+  unsigned long nowMs = millis();
+  if (nowMs - lastSampleMs > STALL_WARN_MS) {
+    digitalWrite(LED_BUILTIN, HIGH);              // SOLID on = sensor stalled
+    if (nowMs - lastReinitMs > REINIT_EVERY_MS) reinitIMU();
+  }
 }
