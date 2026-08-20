@@ -39,24 +39,18 @@ const float ACC_TRUST_FULL_G = 0.10f;
 const float ACC_TRUST_ZERO_G = 0.60f;
 
 // Sensor-stall recovery. The board streams only while the BMI270 keeps asserting
-// new data; if data-ready gets stuck the loop would otherwise spin silently for
-// seconds (the multi-second shank outages seen in the field, master healthy the
-// whole time). So: if no IMU sample arrives for STALL_WARN_MS, show it on the RGB
-// LED (below) and periodically re-init the sensor to recover in ms instead of
-// waiting for it to un-stick on its own.
+// new data; if data-ready gets stuck the loop would otherwise spin silently. So:
+// while active, if no IMU sample arrives for STALL_WARN_MS, show it on the LED and
+// periodically re-init the sensor to recover in ms rather than waiting it out.
 const unsigned long STALL_WARN_MS   = 250;
 const unsigned long REINIT_EVERY_MS = 500;
 unsigned long lastSampleMs = 0;
 unsigned long lastReinitMs = 0;
 
-// Low-rate self-heal (the "I had to reset the sensor every session" fix). A healthy
-// BMI270 streams ~104 Hz; on a cold power-up it sometimes comes up misconfigured at
-// a low rate (~10 Hz) with bad data, which used to need a MANUAL board reset. The
-// master gets a fresh init for free every session (opening its USB port resets it),
-// but the slave free-runs from power with nothing to re-init it. This watchdog gives
-// the slave the same clean start automatically: if it streams fewer than
-// MIN_SAMPLES_PER_WINDOW in a RATE_WINDOW_MS window, force a full sensor re-init --
-// at boot AND mid-session, so a bad power-up state heals itself within ~1 s.
+// Low-rate self-heal. The BMI270 sometimes initializes at a wrong, low ODR (~10 Hz)
+// with bad data. While active, if fewer than MIN_SAMPLES_PER_WINDOW samples stream
+// in a RATE_WINDOW_MS window, force a full sensor re-init -- so a bad start heals
+// itself within ~1 s instead of needing a manual board reset.
 const unsigned long RATE_WINDOW_MS         = 1000;
 const unsigned long MIN_SAMPLES_PER_WINDOW = 30;   // healthy ~50 stream; below this = degraded
 unsigned long sampleCount  = 0;
@@ -78,13 +72,13 @@ bool active = false;
 unsigned long lastCmdMs = 0;
 const unsigned long CMD_TIMEOUT_MS = 1000;   // idle if no keepalive within this
 
-// Health indicator on the built-in LED (pin 13). The onboard RGB LED is dead on
-// this unit, so state is encoded as BLINK PATTERN instead of colour:
-//   fast HEARTBEAT blink   = active, streaming
-//   slow blink             = idle, waiting for a collection to start
-//   SOLID on               = sensor stalled (loop running, re-init firing)
+// Health indicator on the built-in LED (pin 13). State is encoded as a blink
+// pattern so a single LED stays unambiguous:
+//   fast HEARTBEAT blink    = active, streaming
+//   slow blink              = idle, waiting for a collection to start
+//   SOLID on                = sensor stalled (loop running, re-init firing)
 //   3 fast flashes at start = boot -- confirms this firmware is flashed
-//   OFF / frozen           = loop not running (hard fault) or unpowered
+//   OFF / frozen            = loop not running (hard fault) or unpowered
 const unsigned long HEARTBEAT_MS = 150;   // active blink half-period (~3 Hz)
 const unsigned long IDLE_BLINK_MS = 700;  // idle blink half-period (slow)
 bool ledState = false;
@@ -221,7 +215,7 @@ void reinitSeed(unsigned long timeout_ms) {
   }
 }
 
-// Full sensor re-init: re-configure the BMI270 (restores its ~104 Hz output rate
+// Full sensor re-init: re-configure the BMI270 (restores its default output rate
 // if it came up wrong) and re-seed. This is what a manual board reset was doing
 // by hand; the watchdogs call it automatically.
 void reinitIMU() {

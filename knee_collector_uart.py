@@ -472,8 +472,10 @@ def diagnose_stream(seen, parsed, valid_count, last_line, port, need_valid=1):
                 f"{n} fields). Reflash BOTH boards with the current firmware. "
                 f"Last line: {last_line!r}")
     return ("Master is streaming, but every shank quaternion is the zero sentinel "
-            "-> the slave isn't replying. Check the UART wiring/GND between the two "
-            "boards and that the slave is powered.")
+            "-> no data from the slave. Check that the slave is powered and its LED "
+            "is a fast blink (active); a slow idle blink means it isn't getting the "
+            "master's keepalive -- verify BOTH UART wires (Slave TX->Master RX and "
+            "Master TX->Slave RX) and GND between the boards.")
 
 
 def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):

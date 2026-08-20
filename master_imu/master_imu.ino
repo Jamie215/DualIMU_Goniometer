@@ -62,12 +62,11 @@ const float BIAS_SANITY_DPS = 3.0f;
 const float ACC_TRUST_FULL_G = 0.10f;   // within this of 1 g -> trust accel fully
 const float ACC_TRUST_ZERO_G = 0.60f;   // beyond this -> gyro only (no correction)
 
-// The shank streams a packet every ~9.6 ms (~104 Hz). We treat the newest packet
-// as a live shank sample until it is older than this; past it, the slave is
-// presumed stalled and the sample is emitted invalid for the collector to fill.
-// 30 ms is ~3 packet intervals: it absorbs normal phase jitter and the brief mbed
-// RTOS stalls without lying about the data (shank orientation barely moves in
-// 30 ms), while still flagging a genuinely dead slave promptly.
+// The shank streams a packet every ~20 ms (50 Hz). We treat the newest packet as a
+// live shank sample until it is older than this; past it, the slave is presumed
+// stalled and the sample is emitted invalid for the collector to fill. 30 ms is ~1.5
+// packet intervals: it absorbs normal phase jitter without lying about the data
+// (shank orientation barely moves in 30 ms), while flagging a dead slave promptly.
 const unsigned long SHANK_STALE_US = 30000;
 
 // Fixed PC output rate (the 50 Hz baseline). The filters still run at the sensor's
