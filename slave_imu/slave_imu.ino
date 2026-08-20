@@ -39,6 +39,17 @@ const float BIAS_SANITY_DPS = 3.0f;
 const float ACC_TRUST_FULL_G = 0.10f;
 const float ACC_TRUST_ZERO_G = 0.60f;
 
+// Sensor-stall recovery. The board streams only while the BMI270 keeps asserting
+// new data; if data-ready gets stuck the loop would otherwise spin silently for
+// seconds (the multi-second shank outages seen in the field, master healthy the
+// whole time). So: if no IMU sample arrives for STALL_WARN_MS, light the LED (the
+// stall becomes visible on the board) and periodically re-init the sensor to
+// recover in ms instead of waiting for it to un-stick on its own.
+const unsigned long STALL_WARN_MS   = 250;
+const unsigned long REINIT_EVERY_MS = 500;
+unsigned long lastSampleMs = 0;
+unsigned long lastReinitMs = 0;
+
 // Arduino_BMI270_BMM150 returns a REFLECTED (left-handed) frame; negate x of
 // accel AND gyro to restore a right-handed frame for the quaternion filter.
 inline void readAccel(float &ax, float &ay, float &az) {
@@ -125,8 +136,10 @@ void setup() {
                                 // from 460800 for async-clock timing margin -- see
                                 // master_imu.ino for the rationale.
 
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+
   if (!IMU.begin()) {
-    pinMode(LED_BUILTIN, OUTPUT);
     while (1) { digitalWrite(LED_BUILTIN, HIGH); delay(150);
                 digitalWrite(LED_BUILTIN, LOW);  delay(150); }
   }
@@ -142,6 +155,7 @@ void setup() {
     accX = ax; accY = ay; accZ = az;
     seedFromAccel(ax, ay, az);
   }
+  lastSampleMs = millis();
 }
 
 inline void sendPacket() {
@@ -178,5 +192,21 @@ void loop() {
 
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
     sendPacket();                     // stream the freshly-updated orientation
+
+    lastSampleMs = millis();
+    digitalWrite(LED_BUILTIN, LOW);   // healthy: LED off
+    return;
+  }
+
+  // No new IMU data. If the sensor has been silent long enough to be a real stall
+  // (not just the sub-10 ms wait between samples), make it visible and try to
+  // recover the sensor rather than spin silently for seconds.
+  unsigned long nowMs = millis();
+  if (nowMs - lastSampleMs > STALL_WARN_MS) {
+    digitalWrite(LED_BUILTIN, HIGH);              // stall is now visible on the board
+    if (nowMs - lastReinitMs > REINIT_EVERY_MS) {
+      lastReinitMs = nowMs;
+      IMU.begin();                                // re-init to un-stick the BMI270
+    }
   }
 }
