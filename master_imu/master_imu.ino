@@ -49,7 +49,11 @@ const float BIAS_SANITY_DPS = 3.0f;
 const float ACC_TRUST_FULL_G = 0.10f;   // within this of 1 g -> trust accel fully
 const float ACC_TRUST_ZERO_G = 0.60f;   // beyond this -> gyro only (no correction)
 
-const unsigned long SLAVE_TIMEOUT_US = 8000;
+// A 30-byte reply at 115200 baud is ~2.6 ms on the wire, so a healthy round-trip
+// (header scan + body + slave response latency) is ~3-4 ms. 6 ms leaves margin for
+// that yet still fails well inside the ~9.6 ms master loop: a lost poll is dropped
+// and forward-filled rather than stalling the loop waiting on a desynced slave.
+const unsigned long SLAVE_TIMEOUT_US = 6000;
 
 // Read sensors with the reflection fixed (negate x -> right-handed frame).
 inline void readAccel(float &ax, float &ay, float &az) {
@@ -134,7 +138,12 @@ void mahonyUpdate(float gx, float gy, float gz,
 
 void setup() {
   Serial.begin(115200);
-  Serial1.begin(460800);        // fast board-to-board link (must match slave)
+  Serial1.begin(115200);        // board-to-board link (must match slave). 115200,
+                                // not 460800: a 30-byte reply at 104 Hz needs only
+                                // ~25 kbaud, and the two boards clock this async link
+                                // off independent oscillators that drift apart as they
+                                // warm -- the lower rate keeps ample timing margin so
+                                // framing errors don't grow over a session.
   while (!Serial) { ; }
 
   if (!IMU.begin()) {
@@ -161,20 +170,37 @@ void setup() {
 }
 
 // Returns midpoint timestamp on success (fills q[4]/a[3]/rtt), or 0 on failure.
+//
+// The reply is framed by a 0xAA header, so we SCAN for that header before reading
+// the 29-byte body instead of reading 30 bytes blind. Reading blind meant a single
+// lost or extra byte on the async link shifted every following packet by one, and
+// the misalignment persisted (each poll's "30 bytes" straddled a packet boundary),
+// which is what makes rtt climb and validity fall together over a session. With a
+// header resync a glitch costs one packet, not a self-sustaining run of them.
 unsigned long pollSlave(float q[4], float a[3], unsigned long &rtt) {
-  while (Serial1.available()) Serial1.read();
+  while (Serial1.available()) Serial1.read();   // drop stale bytes before framing
   unsigned long tReq = micros();
   Serial1.write('R');
 
+  // Resync: read forward until the 0xAA header (or time out). Right after the
+  // flush the next thing on the wire is a fresh reply, so the header is normally
+  // the first byte; the scan only spends work when stray bytes precede it.
+  bool haveHeader = false;
+  while ((micros() - tReq) < SLAVE_TIMEOUT_US) {
+    if (Serial1.available() && Serial1.read() == 0xAA) { haveHeader = true; break; }
+  }
+  if (!haveHeader) return 0;
+
   uint8_t pkt[30];
-  int idx = 0;
+  pkt[0] = 0xAA;
+  int idx = 1;
   while (idx < 30 && (micros() - tReq) < SLAVE_TIMEOUT_US) {
     if (Serial1.available()) pkt[idx++] = Serial1.read();
   }
   unsigned long tResp = micros();
-  if (idx < 30 || pkt[0] != 0xAA) return 0;
+  if (idx < 30) return 0;
   uint8_t cs = 0;
-  for (int i = 1; i <= 28; i++) cs ^= pkt[i];
+  for (int i = 1; i <= 28; i++) cs ^= pkt[i];   // checksum guards a false 0xAA match
   if (cs != pkt[29]) return 0;
   memcpy(q, &pkt[1], 16);
   memcpy(a, &pkt[17], 12);

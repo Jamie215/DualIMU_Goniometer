@@ -112,7 +112,9 @@ void mahonyUpdate(float gx, float gy, float gz,
 }
 
 void setup() {
-  Serial1.begin(460800);        // fast board-to-board link (must match master)
+  Serial1.begin(115200);        // board-to-board link (must match master). Lowered
+                                // from 460800 for async-clock timing margin -- see
+                                // master_imu.ino for the rationale.
 
   if (!IMU.begin()) {
     pinMode(LED_BUILTIN, OUTPUT);

@@ -15,7 +15,7 @@ the boards in a precise, repeatable orientation.
 
 - 2× **Arduino Nano 33 BLE Rev2** (onboard **BMI270** accel+gyro; BMM150
   magnetometer is present but **unused**).
-- UART between the boards (`Serial1`, **460800 baud**):
+- UART between the boards (`Serial1`, **115200 baud**):
 
   ```
   Master TX (D1) ->  Slave RX (D0)
@@ -280,8 +280,11 @@ rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
 [17..28] float ax,ay,az (little-endian, g, handedness-corrected)
 [29]     XOR checksum of bytes [1..28]
 ```
-Master requests with a single `'R'` byte and reads exactly 30 bytes within
-`SLAVE_TIMEOUT_US` (8 ms); the slave sample is bracketed at `(t_req+t_resp)/2`.
+Master requests with a single `'R'` byte, **resyncs on the `0xAA` header**, then
+reads the 29-byte body within `SLAVE_TIMEOUT_US` (6 ms); the slave sample is
+bracketed at `(t_req+t_resp)/2`. Scanning for the header (rather than reading 30
+bytes blind) means one corrupted or dropped byte costs a single packet instead of
+desyncing every packet that follows.
 
 **Master → PC line (text, 18 fields):**
 ```
@@ -332,9 +335,21 @@ recording:
    erratically (apparent zeros/overshoot) right after swinging back from a high
    angle.
 
-6. **UART timeouts.** The 30-byte reply is ~0.65 ms at 460800 baud (was ~2.7 ms
-   at 115200, which crowded the 8 ms budget and caused dropped "invalid" shank
-   samples). Raising `Serial1` to **460800** on both boards restored margin.
+6. **Shank dropouts that grow over a session (`rtt` up, `valid%` down together).**
+   The board-to-board reply used to be read as a fixed 30 bytes with no header
+   resync, so a single lost/extra byte on the async link shifted every following
+   packet by one. The misalignment was self-sustaining — each poll's 30 bytes
+   straddled a packet boundary, so successful round-trips got *longer* (`rtt`
+   climbs) while a growing fraction timed out (`valid%` falls). It worsens through
+   a session as the two boards' independent UART oscillators drift apart with
+   self-heating, since `460800` baud left little per-byte timing margin. (An
+   earlier pass raised the rate to `460800` to shrink the reply's time-on-wire,
+   which masked the desync but *added* the thermal fragility.) **Fix:** resync on
+   the `0xAA` header so one glitch costs one packet, not a run (`pollSlave()`); and
+   return `Serial1` to **115200** for ~4× the timing margin — a 30-byte reply at
+   104 Hz needs only ~25 kbaud, so the lower rate costs nothing and drifts far
+   less. `SLAVE_TIMEOUT_US` is **6 ms**: past a healthy ~3-4 ms round-trip the poll
+   fails fast and the sample is forward-filled instead of stalling the master loop.
 
 7. **Consolidated to one reliable method: gravity-in-board from the fused
    quaternion.** The project had accumulated four selectable behaviors
