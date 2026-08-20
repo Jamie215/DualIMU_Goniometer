@@ -3,7 +3,7 @@
  * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270; magnetometer unused)
  *
  * STREAMS its orientation quaternion AND raw accelerometer vector continuously,
- * one packet per IMU update (~104 Hz) -- it does NOT wait to be polled. The old
+ * at a fixed 50 Hz -- it does NOT wait to be polled. The old
  * request/response ('R' -> reply) coupled the master to the slave's response
  * latency: the slave only answered between chunks of its own loop, and the mbed
  * RTOS underneath adds sporadic multi-ms stalls, so a reply could arrive after the
@@ -59,9 +59,16 @@ unsigned long lastReinitMs = 0;
 // MIN_SAMPLES_PER_WINDOW in a RATE_WINDOW_MS window, force a full sensor re-init --
 // at boot AND mid-session, so a bad power-up state heals itself within ~1 s.
 const unsigned long RATE_WINDOW_MS         = 1000;
-const unsigned long MIN_SAMPLES_PER_WINDOW = 60;   // healthy ~104; below this = degraded
+const unsigned long MIN_SAMPLES_PER_WINDOW = 30;   // healthy ~50 stream; below this = degraded
 unsigned long sampleCount  = 0;
 unsigned long rateWindowMs = 0;
+
+// Fixed stream rate (the 50 Hz baseline). The filter still updates on every IMU
+// sample for smoothness, but we transmit at most one packet per STREAM_PERIOD_US.
+// Halving the packets on the wire is the point: far more timing margin on the async
+// board-to-board link, and 50 Hz is ample for knee ROM.
+const unsigned long STREAM_PERIOD_US = 20000;   // 50 Hz
+unsigned long lastSendUs = 0;
 
 // Health indicator on the built-in LED (pin 13). The onboard RGB LED is dead on
 // this unit, so state is encoded as BLINK PATTERN instead of colour, which stays
@@ -220,7 +227,7 @@ inline void sendPacket() {
   uint8_t cs = 0;
   for (int i = 1; i <= 28; i++) cs ^= pkt[i];
   pkt[29] = cs;
-  Serial1.write(pkt, 30);           // ~30 B at 104 Hz = ~27% of the 115200 link
+  Serial1.write(pkt, 30);           // ~30 B at 50 Hz = ~13% of the 115200 link
 }
 
 void loop() {
@@ -233,9 +240,12 @@ void loop() {
     rateWindowMs = millis();
   }
 
-  // Free-running: update orientation on each IMU sample and stream one packet.
-  // No RX handling -- the master is a passive listener on this link now.
-  if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
+  // Free-running at a fixed 50 Hz: process + stream at most once per STREAM_PERIOD_US.
+  // Throttling here (not just on the wire) also lightens the slave loop. No RX
+  // handling -- the master is a passive listener on this link now.
+  if ((micros() - lastSendUs) >= STREAM_PERIOD_US
+      && IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
+    lastSendUs = micros();
     float ax, ay, az, gx, gy, gz;
     readAccel(ax, ay, az);
     readGyro(gx, gy, gz);             // deg/s, handedness-corrected

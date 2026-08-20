@@ -14,10 +14,11 @@
  * negate x of accel AND gyro to restore det +1. Without this the gyro's rotation
  * sense is mirrored vs the accel and the filter wanders.
  *
- * The shank board STREAMS its state continuously (~104 Hz); this board is a passive
+ * The shank board STREAMS its state at a fixed 50 Hz; this board is a passive
  * listener. Each loop it drains its UART buffer, keeping the freshest complete
- * packet, and merges it onto its own clock -- it never blocks waiting on the slave,
- * so a slave stall just ages the last packet instead of dropping a sample.
+ * packet, and emits a merged PC line at 50 Hz -- it never blocks waiting on the
+ * slave, so a slave stall just ages the last packet instead of dropping a sample.
+ * The lower rate (down from ~104 Hz) leaves generous link + USB timing margin.
  *
  * Slave stream packet (30 bytes):
  *   [0] 0xAA header
@@ -63,6 +64,14 @@ const float ACC_TRUST_ZERO_G = 0.60f;   // beyond this -> gyro only (no correcti
 // RTOS stalls without lying about the data (shank orientation barely moves in
 // 30 ms), while still flagging a genuinely dead slave promptly.
 const unsigned long SHANK_STALE_US = 30000;
+
+// Fixed PC output rate (the 50 Hz baseline). The filters still run at the sensor's
+// full rate for smoothness, but we emit ONE merged line every EMIT_PERIOD_US. A
+// lower collection rate halves link + USB pressure and leaves generous timing
+// margin, and 50 Hz is far more than knee ROM needs (it's resampled PC-side anyway).
+const unsigned long EMIT_PERIOD_US = 20000;   // 50 Hz
+unsigned long lastEmitUs = 0;
+float thighAx = 0, thighAy = 0, thighAz = 1;  // latest thigh raw accel, cached for the emit
 
 // Read sensors with the reflection fixed (negate x -> right-handed frame).
 inline void readAccel(float &ax, float &ay, float &az) {
@@ -159,7 +168,7 @@ void setup() {
     Serial.println("ERR,IMU init failed");
     while (1) { ; }
   }
-  Serial.println("# MASTER fw: stream-2 (shank streams; age_us fail-safe)");
+  Serial.println("# MASTER fw: stream-50hz (shank streams; 50 Hz emit; age_us fail-safe)");
   Serial.println("# MASTER cols: D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,"
                  "t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us");
 
@@ -218,11 +227,14 @@ void pumpShankStream() {
 void loop() {
   pumpShankStream();   // keep draining even between our own IMU samples
 
+  // Run the thigh filter at the sensor's full rate for smoothness; cache the latest
+  // state. Emission is throttled separately, below.
   if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
     float ax, ay, az, gx, gy, gz;
     readAccel(ax, ay, az);
     readGyro(gx, gy, gz);              // deg/s, handedness-corrected
     gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
+    thighAx = ax; thighAy = ay; thighAz = az;   // cache raw accel for the emit
 
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;
@@ -230,28 +242,32 @@ void loop() {
     if (dt <= 0 || dt > 0.5f) dt = 1.0f / 104.0f;
 
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+  }
+
+  // Emit one merged PC line at a fixed 50 Hz, decoupled from the sensor rate.
+  unsigned long tnow = micros();
+  if (tnow - lastEmitUs >= EMIT_PERIOD_US) {
+    lastEmitUs = tnow;
 
     pumpShankStream();                // grab the freshest packet before emitting
     // Age the packet against a timestamp taken AFTER the final pump: that pump can
-    // parse a packet whose micros() stamp is later than `now` (captured above), and
-    // an unsigned `now - shankRecvUs` would then underflow to ~4.29e9 and look stale.
-    // Fail SAFE regardless: if tRef ever reads before the packet stamp (reordering
-    // or the ~71 min micros() rollover), clamp age to 0 (just-received) instead of
-    // letting an unsigned wrap flag a good sample invalid.
+    // parse a packet whose micros() stamp is later than tnow, and an unsigned
+    // subtraction would underflow and look stale. Fail SAFE: clamp to 0 in that
+    // case (and across the ~71 min micros() rollover) instead of flagging good data.
     unsigned long tRef = micros();
     unsigned long age = (shankRecvUs == 0 || tRef < shankRecvUs) ? 0
                                                                  : (tRef - shankRecvUs);
     bool shankFresh = (shankRecvUs != 0) && (age <= SHANK_STALE_US);
 
     Serial.print("D,");
-    Serial.print(now);        Serial.print(',');
+    Serial.print(tnow);       Serial.print(',');
     Serial.print(q0, 4);      Serial.print(',');
     Serial.print(q1, 4);      Serial.print(',');
     Serial.print(q2, 4);      Serial.print(',');
     Serial.print(q3, 4);      Serial.print(',');
-    Serial.print(ax, 4);      Serial.print(',');
-    Serial.print(ay, 4);      Serial.print(',');
-    Serial.print(az, 4);      Serial.print(',');
+    Serial.print(thighAx, 4); Serial.print(',');
+    Serial.print(thighAy, 4); Serial.print(',');
+    Serial.print(thighAz, 4); Serial.print(',');
     // Shank block: freshest packet if within SHANK_STALE_US, else the zero sentinel
     // (timestamp + quaternion + accel all 0) so the collector marks it invalid.
     if (shankFresh) {
