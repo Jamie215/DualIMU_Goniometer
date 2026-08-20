@@ -2,9 +2,9 @@
 
 Two Arduino Nano 33 BLE Rev2 boards (one on the thigh, one on the shank) measure
 knee flexion angle. Each board runs a 6-DOF orientation filter; the **shank
-board (slave)** answers the **thigh board (master)** over a wired UART link, and
-the master streams both segments' data to a PC, where `knee_collector_uart.py`
-computes and logs the knee angle.
+board (slave)** streams its state to the **thigh board (master)** over a wired UART
+link, and the master merges both segments and streams them to a PC, where
+`knee_collector_uart.py` computes and logs the knee angle.
 
 The design goal is a **placement-independent** angle: you should not have to mount
 the boards in a precise, repeatable orientation.
@@ -15,13 +15,14 @@ the boards in a precise, repeatable orientation.
 
 - 2× **Arduino Nano 33 BLE Rev2** (onboard **BMI270** accel+gyro; BMM150
   magnetometer is present but **unused**).
-- UART between the boards (`Serial1`, **115200 baud**):
+- UART between the boards (`Serial1`, **115200 baud**). The slave streams and the
+  master only listens, so a single data line plus ground is all that's needed:
 
   ```
-  Master TX (D1) ->  Slave RX (D0)
-  Master RX (D0) <-  Slave TX (D1)
-  Master GND    <->  Slave GND
+  Slave TX (D1)  ->  Master RX (D0)
+  Slave GND     <->  Master GND
   ```
+  (Master TX -> Slave RX is no longer used; harmless to leave connected.)
 - Master connects to the PC over USB.
 - Mount convention used in testing: board long axis along the limb long axis,
   USB port toward the hip, one board above and one below the knee. Exact rotation
@@ -273,27 +274,31 @@ rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
 
 ## Data format / wire protocol
 
-**Slave → master reply (binary, 30 bytes):**
+**Slave → master stream (binary, 30 bytes/packet, ~104 Hz):**
 ```
 [0]      0xAA header
 [1..16]  float q0..q3   (little-endian, w,x,y,z)
 [17..28] float ax,ay,az (little-endian, g, handedness-corrected)
 [29]     XOR checksum of bytes [1..28]
 ```
-Master requests with a single `'R'` byte, **resyncs on the `0xAA` header**, then
-reads the 29-byte body within `SLAVE_TIMEOUT_US` (12 ms); the slave sample is
-bracketed at `(t_req+t_resp)/2`. Scanning for the header (rather than reading 30
-bytes blind) means one corrupted or dropped byte costs a single packet instead of
-desyncing every packet that follows. `rtt_us` is reported even on a dropped poll:
-near the timeout means the slave answered too late, a small value means the bytes
-were corrupt — so an "invalid" shank sample says *why* it dropped.
+The shank board **streams** these continuously; it is not polled. The master is a
+passive listener: each loop it drains its UART buffer, **resyncs on the `0xAA`
+header**, validates the checksum, and keeps the freshest complete packet — it never
+blocks on the slave. A lost/extra byte fails one checksum and resyncs on the next
+header, so a glitch costs one packet, never a lasting desync. The master timestamps
+each packet on its own clock when parsed; if the freshest packet is older than
+`SHANK_STALE_US` (30 ms) the shank is reported invalid (zeros) for the collector to
+forward-fill. The line's last field is that packet's **age** in µs — small is
+healthy, large (or a run of invalids) means the slave has stalled.
 
 **Master → PC line (text, 18 fields):**
 ```
-D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,t_shank_mid_us,sw,sx,sy,sz,sax,say,saz,rtt_us
+D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us
 ```
-On a bad/missing slave reply, the shank fields and midpoint are `0`; the collector
-marks such samples invalid (and short gaps are forward-filled).
+When the freshest shank packet is stale/absent, `t_shank_recv_us` and the shank
+fields are `0`; the collector marks such samples invalid (and short gaps are
+forward-filled). `age_us` is the freshest shank packet's age (the CSV keeps the
+`rtt_us` column name for continuity — same units, a link-health number).
 
 ---
 
@@ -337,32 +342,33 @@ recording:
    erratically (apparent zeros/overshoot) right after swinging back from a high
    angle.
 
-6. **Shank dropouts that grow over a session (`rtt` up, `valid%` down together).**
-   The board-to-board reply used to be read as a fixed 30 bytes with no header
-   resync, so a single lost/extra byte on the async link shifted every following
-   packet by one. The misalignment was self-sustaining — each poll's 30 bytes
-   straddled a packet boundary, so successful round-trips got *longer* (`rtt`
-   climbs) while a growing fraction timed out (`valid%` falls). It worsens through
-   a session as the two boards' independent UART oscillators drift apart with
-   self-heating, since `460800` baud left little per-byte timing margin. (An
-   earlier pass raised the rate to `460800` to shrink the reply's time-on-wire,
-   which masked the desync but *added* the thermal fragility.) **Fix:** resync on
-   the `0xAA` header so one glitch costs one packet, not a run (`pollSlave()`); and
-   return `Serial1` to **115200** for ~4× the timing margin — a 30-byte reply at
-   104 Hz needs only ~25 kbaud, so the lower rate costs nothing and drifts far
-   less.
+6. **Shank dropouts that grow over a session — traced in three steps.** The symptom
+   was shank samples going invalid more and more as a session ran, with the link
+   round-trip climbing alongside. Diagnosing it took three passes, each of which
+   ruled something out:
 
-   A second, independent cause of dropped shank samples is **response latency**,
-   not corruption: the slave only answers `'R'` at points in its own ~104 Hz loop,
-   and the mbed RTOS can add sporadic multi-ms stalls, so a reply sometimes arrives
-   several ms late. A tight window discards those. Because the master loop is gated
-   by its own IMU (~9.6 ms/sample), a *wider* window only extends the occasional
-   late poll — average rate barely changes — and knee flexion needs nowhere near
-   100 Hz anyway. So `SLAVE_TIMEOUT_US` is set to **12 ms** (catches a reply delayed
-   by nearly a full slave loop) rather than optimized for peak rate. `rtt_us` is
-   logged even on a drop (near-timeout = too-slow slave; small = corrupt bytes), so
-   `valid%` failures are self-classifying — widen the window / lower the rate for
-   the former, check baud / wiring / GND for the latter.
+   - **Framing desync.** The board-to-board reply was read as a fixed 30 bytes with
+     no header resync, so one lost/extra byte on the async link shifted every
+     following packet by one, and the misalignment was self-sustaining. **Fix:**
+     resync on the `0xAA` header + validate the checksum, so a glitch costs one
+     packet, not a run. Also returned `Serial1` from `460800` to **115200** for ~4×
+     the per-byte timing margin (a 30-byte packet at 104 Hz needs only ~25 kbaud, so
+     the lower rate costs nothing and drifts far less as the boards self-heat). An
+     earlier pass had *raised* the rate to `460800` to shrink time-on-wire, which
+     masked the desync but added the thermal fragility.
+   - **Too-tight response window.** With framing fixed, `valid%` rose to ~93% but
+     the remaining drops showed the request round-trip hitting the *full* timeout —
+     the slave producing nothing in time, not corrupt bytes. Root cause: the slave
+     only answered a poll between chunks of its own loop, and the mbed RTOS adds
+     sporadic multi-ms stalls, so a reply could arrive after any fixed deadline.
+   - **The real fix — stream instead of poll.** Widening the deadline is an arms
+     race (and every stall stalls the master). Instead the slave now **streams** its
+     packet continuously and the master reads the freshest one already in its UART
+     buffer, never blocking. A slave stall no longer drops a sample — it just ages
+     the newest packet; if that age exceeds `SHANK_STALE_US` (30 ms) the sample is
+     marked invalid and the collector forward-fills it. This decouples the master's
+     rate from the slave's latency entirely. Line field 18 is now the packet **age**
+     (`age_us`); a large age or a run of invalids localizes a stalled/dead slave.
 
 7. **Consolidated to one reliable method: gravity-in-board from the fused
    quaternion.** The project had accumulated four selectable behaviors
@@ -406,7 +412,7 @@ shank board at a right angle to the thigh board reads ~90°.
 ## Files
 
 ```
-master_imu/master_imu.ino   thigh board: 6-DOF filter, polls slave, streams to PC
-slave_imu/slave_imu.ino     shank board: 6-DOF filter, answers 'R' over UART
+master_imu/master_imu.ino   thigh board: 6-DOF filter, reads slave stream, streams to PC
+slave_imu/slave_imu.ino     shank board: 6-DOF filter, streams packets over UART
 knee_collector_uart.py      PC collector: calibration, angle math, CSV, --selftest
 ```

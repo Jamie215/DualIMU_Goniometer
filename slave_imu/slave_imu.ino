@@ -2,13 +2,22 @@
  * KNEE ANGLE - SLAVE (shank)  [UART, 6-DOF quaternion + raw gravity]
  * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270; magnetometer unused)
  *
- * On request ('R') replies with its orientation quaternion AND its raw
- * accelerometer vector (see master_imu.ino for the packet + the handedness note).
+ * STREAMS its orientation quaternion AND raw accelerometer vector continuously,
+ * one packet per IMU update (~104 Hz) -- it does NOT wait to be polled. The old
+ * request/response ('R' -> reply) coupled the master to the slave's response
+ * latency: the slave only answered between chunks of its own loop, and the mbed
+ * RTOS underneath adds sporadic multi-ms stalls, so a reply could arrive after the
+ * master's timeout and the sample was lost. Streaming removes that deadline: the
+ * master reads whatever complete packets are already in its UART buffer and uses
+ * the freshest, never blocking on the slave. A slave stall just makes the newest
+ * packet a little older; nothing is dropped waiting on it.
  *
- * Reply packet (30 bytes):
+ * Packet (30 bytes), framed for resync on a free-running stream:
  *   [0] 0xAA, [1..16] float q0..q3, [17..28] float ax,ay,az, [29] XOR of [1..28]
+ * (See master_imu.ino for the handedness note.)
  *
- * Wiring: Slave TX(D1)->Master RX(D0), Slave RX(D0)<-Master TX(D1), GND<->GND.
+ * Wiring: Slave TX(D1)->Master RX(D0), GND<->GND. (Master RX is all that's used
+ * now; the slave no longer reads its RX line.)
  */
 
 #include "Arduino_BMI270_BMM150.h"
@@ -148,28 +157,19 @@ inline void sendPacket() {
   uint8_t cs = 0;
   for (int i = 1; i <= 28; i++) cs ^= pkt[i];
   pkt[29] = cs;
-  Serial1.write(pkt, 30);
-}
-
-inline void serviceRequest() {
-  if (Serial1.available()) {
-    char c = Serial1.read();
-    if (c == 'R') sendPacket();
-  }
+  Serial1.write(pkt, 30);           // ~30 B at 104 Hz = ~27% of the 115200 link
 }
 
 void loop() {
-  serviceRequest();  // answer fast, top priority
-
+  // Free-running: update orientation on each IMU sample and stream one packet.
+  // No RX handling -- the master is a passive listener on this link now.
   if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
     float ax, ay, az, gx, gy, gz;
     readAccel(ax, ay, az);
-    serviceRequest();
     readGyro(gx, gy, gz);             // deg/s, handedness-corrected
     gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
-    serviceRequest();
 
-    accX = ax; accY = ay; accZ = az;  // cache raw gravity for the reply
+    accX = ax; accY = ay; accZ = az;  // cache raw gravity for the packet
 
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;
@@ -177,7 +177,6 @@ void loop() {
     if (dt <= 0 || dt > 0.5f) dt = 1.0f / 104.0f;
 
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+    sendPacket();                     // stream the freshly-updated orientation
   }
-
-  serviceRequest();
 }
