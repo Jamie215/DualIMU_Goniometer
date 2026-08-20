@@ -231,7 +231,11 @@ void loop() {
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
 
     pumpShankStream();                // grab the freshest packet before emitting
-    unsigned long age = (shankRecvUs == 0) ? 0 : (now - shankRecvUs);
+    // Age the packet against a timestamp taken AFTER the final pump: that pump can
+    // parse a packet whose micros() stamp is later than `now` (captured above), and
+    // an unsigned `now - shankRecvUs` would then underflow to ~4.29e9 and look stale.
+    unsigned long tRef = micros();
+    unsigned long age = (shankRecvUs == 0) ? 0 : (tRef - shankRecvUs);
     bool shankFresh = (shankRecvUs != 0) && (age <= SHANK_STALE_US);
 
     Serial.print("D,");
