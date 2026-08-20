@@ -2,22 +2,21 @@
  * KNEE ANGLE - SLAVE (shank)  [UART, 6-DOF quaternion + raw gravity]
  * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270; magnetometer unused)
  *
- * STREAMS its orientation quaternion AND raw accelerometer vector continuously,
- * at a fixed 50 Hz -- it does NOT wait to be polled. The old
- * request/response ('R' -> reply) coupled the master to the slave's response
- * latency: the slave only answered between chunks of its own loop, and the mbed
- * RTOS underneath adds sporadic multi-ms stalls, so a reply could arrive after the
- * master's timeout and the sample was lost. Streaming removes that deadline: the
- * master reads whatever complete packets are already in its UART buffer and uses
- * the freshest, never blocking on the slave. A slave stall just makes the newest
- * packet a little older; nothing is dropped waiting on it.
+ * STREAMS its orientation quaternion AND raw accelerometer vector at a fixed 50 Hz
+ * while a collection is active -- it does NOT wait to be polled. The master reads
+ * whatever complete packets are already in its UART buffer and uses the freshest,
+ * never blocking on the slave; a slave stall just ages the newest packet.
+ *
+ * Collect-on-demand: the slave runs the IMU only while the master's keepalive ('S')
+ * is arriving (i.e. while the PC has the master's USB port open). It idles when the
+ * keepalive stops or on 'X', so the sensor isn't run while nothing is observing.
  *
  * Packet (30 bytes), framed for resync on a free-running stream:
  *   [0] 0xAA, [1..16] float q0..q3, [17..28] float ax,ay,az, [29] XOR of [1..28]
  * (See master_imu.ino for the handedness note.)
  *
- * Wiring: Slave TX(D1)->Master RX(D0), GND<->GND. (Master RX is all that's used
- * now; the slave no longer reads its RX line.)
+ * Wiring (BOTH directions): Slave TX(D1)->Master RX(D0) for the stream, and
+ * Master TX(D1)->Slave RX(D0) for the keepalive, plus GND<->GND.
  */
 
 #include "Arduino_BMI270_BMM150.h"
@@ -70,15 +69,24 @@ unsigned long rateWindowMs = 0;
 const unsigned long STREAM_PERIOD_US = 20000;   // 50 Hz
 unsigned long lastSendUs = 0;
 
+// Collect-on-demand. The slave runs the IMU only while the master says a collection
+// is active. The master forwards a keepalive ('S') while its USB port is open; the
+// slave activates on it and idles once the keepalive stops arriving (port closed,
+// master reset, or unplugged). 'X' idles immediately. This keeps the sensor from
+// running while nothing is observing, and keeps both boards in lockstep.
+bool active = false;
+unsigned long lastCmdMs = 0;
+const unsigned long CMD_TIMEOUT_MS = 1000;   // idle if no keepalive within this
+
 // Health indicator on the built-in LED (pin 13). The onboard RGB LED is dead on
-// this unit, so state is encoded as BLINK PATTERN instead of colour, which stays
-// unambiguous with a single LED:
-//   steady HEARTBEAT blink = healthy, streaming
+// this unit, so state is encoded as BLINK PATTERN instead of colour:
+//   fast HEARTBEAT blink   = active, streaming
+//   slow blink             = idle, waiting for a collection to start
 //   SOLID on               = sensor stalled (loop running, re-init firing)
-//   3 fast flashes at start = boot -- at plug-in confirms this firmware is flashed;
-//                             mid-session means the board reset (brown-out/fault)
+//   3 fast flashes at start = boot -- confirms this firmware is flashed
 //   OFF / frozen           = loop not running (hard fault) or unpowered
-const unsigned long HEARTBEAT_MS = 150;   // healthy blink half-period (~3 Hz)
+const unsigned long HEARTBEAT_MS = 150;   // active blink half-period (~3 Hz)
+const unsigned long IDLE_BLINK_MS = 700;  // idle blink half-period (slow)
 bool ledState = false;
 unsigned long lastBlinkMs = 0;
 
@@ -183,11 +191,20 @@ void setup() {
     while (1) { digitalWrite(LED_BUILTIN, HIGH); delay(150);   // fast blink = IMU init failed
                 digitalWrite(LED_BUILTIN, LOW);  delay(150); }
   }
+  // No calibration or streaming at boot -- the board idles until the master signals
+  // a collection has begun (see activate()), so the IMU isn't run while unobserved.
+}
 
-  calibrateGyroBias();                 // keep the board STILL at startup
-  reinitSeed(2000);                    // wait for data, seed orientation from gravity
-  lastSampleMs = millis();
-  rateWindowMs = millis();
+// Begin an active collection: calibrate the gyro bias (board should be still) and
+// seed orientation from gravity, fresh for this session.
+void activate() {
+  calibrateGyroBias();
+  reinitSeed(2000);
+  lastSampleMs  = millis();
+  rateWindowMs  = millis();
+  lastSendUs    = micros();
+  lastCmdMs     = millis();            // set AFTER the ~3 s calibrate so we don't instantly time out
+  active = true;
 }
 
 // Wait (up to timeout) for the accelerometer to produce data, then seed the
@@ -231,8 +248,27 @@ inline void sendPacket() {
 }
 
 void loop() {
+  // Follow the master's collect/idle commands. 'S' (start / keepalive) keeps us
+  // active; 'X' idles immediately; no keepalive within CMD_TIMEOUT_MS also idles.
+  while (Serial1.available()) {
+    char c = Serial1.read();
+    if (c == 'S') { lastCmdMs = millis(); if (!active) activate(); }
+    else if (c == 'X') { active = false; }
+  }
+
+  // Idle when not in a collection: don't touch the IMU, just show a slow blink.
+  if (!active || (millis() - lastCmdMs > CMD_TIMEOUT_MS)) {
+    active = false;
+    if (millis() - lastBlinkMs >= IDLE_BLINK_MS) {
+      lastBlinkMs = millis();
+      ledState = !ledState;
+      digitalWrite(LED_BUILTIN, ledState);
+    }
+    return;
+  }
+
   // Rate watchdog: once per window, re-init the sensor if too few samples streamed.
-  // Heals a bad low-rate power-up (~10 Hz) automatically, no manual reset needed.
+  // Heals a bad low-rate state (~10 Hz) automatically, no manual reset needed.
   unsigned long tw = millis();
   if (tw - rateWindowMs >= RATE_WINDOW_MS) {
     if (sampleCount < MIN_SAMPLES_PER_WINDOW) reinitIMU();
@@ -240,9 +276,7 @@ void loop() {
     rateWindowMs = millis();
   }
 
-  // Free-running at a fixed 50 Hz: process + stream at most once per STREAM_PERIOD_US.
-  // Throttling here (not just on the wire) also lightens the slave loop. No RX
-  // handling -- the master is a passive listener on this link now.
+  // Active: process + stream at a fixed 50 Hz (at most one packet per STREAM_PERIOD_US).
   if ((micros() - lastSendUs) >= STREAM_PERIOD_US
       && IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
     lastSendUs = micros();
@@ -256,14 +290,14 @@ void loop() {
     unsigned long now = micros();
     float dt = (now - lastMicros) * 1e-6f;
     lastMicros = now;
-    if (dt <= 0 || dt > 0.5f) dt = 1.0f / 104.0f;
+    if (dt <= 0 || dt > 0.5f) dt = 1.0f / 50.0f;
 
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
     sendPacket();                     // stream the freshly-updated orientation
 
     sampleCount++;
     lastSampleMs = millis();
-    // healthy: steady heartbeat blink (non-blocking toggle)
+    // active: fast heartbeat blink (non-blocking toggle)
     if (millis() - lastBlinkMs >= HEARTBEAT_MS) {
       lastBlinkMs = millis();
       ledState = !ledState;
@@ -272,8 +306,7 @@ void loop() {
     return;
   }
 
-  // No new IMU data. If the sensor has been silent long enough to be a real stall
-  // (not just the sub-10 ms wait between samples), make it visible and recover it.
+  // Active but no new IMU data for a while -> real stall: make it visible and recover.
   unsigned long nowMs = millis();
   if (nowMs - lastSampleMs > STALL_WARN_MS) {
     digitalWrite(LED_BUILTIN, HIGH);              // SOLID on = sensor stalled

@@ -490,7 +490,14 @@ def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
     last_warn = time.time()
     while valid < need_valid:
         line = ser.readline().decode('ascii', 'ignore').strip()
-        if line and not line.startswith('#'):   # ignore the master's '# ...' banners
+        if line.startswith('#'):
+            # Surface the master's banners (firmware id, "calibrating, hold still",
+            # gyro bias). Seeing them means the board is alive and starting a
+            # collection, so reset the no-data timer instead of warning spuriously.
+            print(f"  {line}")
+            last_warn = time.time()
+            continue
+        if line:
             seen += 1
             last_line = line
             rec = parse_line(line)

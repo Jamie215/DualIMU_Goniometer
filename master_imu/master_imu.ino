@@ -32,7 +32,12 @@
  * newest packet is older than SHANK_STALE_US the shank fields and its timestamp are
  * 0, so the collector marks the sample invalid and forward-fills it.
  *
- * Wiring: Slave TX(D1)->Master RX(D0), GND<->GND. (Master no longer transmits.)
+ * Collect-on-demand: the boards run their IMUs only while a collection is active
+ * (this board's USB port is open). The master forwards a keepalive to the slave so
+ * both run in lockstep and both idle when the port closes -- nothing runs unobserved.
+ *
+ * Wiring (BOTH directions needed): Slave TX(D1)->Master RX(D0) for the stream, and
+ * Master TX(D1)->Slave RX(D0) for the keepalive, plus GND<->GND.
  */
 
 #include "Arduino_BMI270_BMM150.h"
@@ -72,6 +77,15 @@ const unsigned long SHANK_STALE_US = 30000;
 const unsigned long EMIT_PERIOD_US = 20000;   // 50 Hz
 unsigned long lastEmitUs = 0;
 float thighAx = 0, thighAy = 0, thighAz = 1;  // latest thigh raw accel, cached for the emit
+
+// Collect-on-demand. The boards run the IMUs only while a collection is active,
+// not free-running from power. "Active" = the USB port is open (a host -- the
+// collector, the GUI, even the Serial Monitor -- has it open), detected via
+// `Serial`. On start we calibrate + seed fresh; while active we forward a keepalive
+// to the slave so it runs in lockstep; on port close everything idles.
+bool collecting = false;
+unsigned long lastKeepAliveMs = 0;
+const unsigned long KEEPALIVE_MS = 200;       // how often to poke the slave while active
 
 // Read sensors with the reflection fixed (negate x -> right-handed frame).
 inline void readAccel(float &ax, float &ay, float &az) {
@@ -157,28 +171,39 @@ void mahonyUpdate(float gx, float gy, float gz,
 void setup() {
   Serial.begin(115200);
   Serial1.begin(115200);        // board-to-board link (must match slave). 115200,
-                                // not 460800: a 30-byte packet at 104 Hz needs only
-                                // ~25 kbaud, and the two boards clock this async link
+                                // not 460800: a 30-byte packet at 50 Hz needs only
+                                // ~12 kbaud, and the two boards clock this async link
                                 // off independent oscillators that drift apart as they
                                 // warm -- the lower rate keeps ample timing margin so
                                 // framing errors don't grow over a session.
   while (!Serial) { ; }
 
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+
   if (!IMU.begin()) {
     Serial.println("ERR,IMU init failed");
     while (1) { ; }
   }
-  Serial.println("# MASTER fw: stream-50hz (shank streams; 50 Hz emit; age_us fail-safe)");
+  Serial.println("# MASTER fw: gated-50hz (collect while USB open; shank keepalive-gated)");
   Serial.println("# MASTER cols: D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,"
                  "t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us");
+  lastMicros = micros();
+  // No IMU calibration here -- it happens fresh in startCollecting(), so each
+  // session gets a clean bias and the sensor isn't run while nothing is observing.
+}
 
-  calibrateGyroBias();                 // keep the board STILL at startup
+// Begin a collection: tell the slave to start (so it calibrates in parallel),
+// then calibrate + seed this board. Held-still assumption applies here, not at boot.
+void startCollecting() {
+  Serial1.write('S');                  // wake the slave (it calibrates in parallel)
+  Serial.println("# collecting: calibrating, hold still ~3 s");
+  calibrateGyroBias();
   Serial.print("# master gyro bias dps: ");
   Serial.print(gyroBias[0], 3); Serial.print(',');
   Serial.print(gyroBias[1], 3); Serial.print(',');
   Serial.println(gyroBias[2], 3);
 
-  lastMicros = micros();
   unsigned long t0 = millis();
   while (!IMU.accelerationAvailable() && millis() - t0 < 2000) { ; }
   if (IMU.accelerationAvailable()) {
@@ -186,6 +211,16 @@ void setup() {
     readAccel(ax, ay, az);
     seedFromAccel(ax, ay, az);
   }
+  lastMicros = micros();
+  lastEmitUs = micros();
+  collecting = true;
+  digitalWrite(LED_BUILTIN, HIGH);     // lit = collecting
+}
+
+void stopCollecting() {
+  Serial1.write('X');                  // tell the slave to idle
+  collecting = false;
+  digitalWrite(LED_BUILTIN, LOW);      // dark = idle
 }
 
 // Freshest shank state received from the stream, plus when (master clock) it was
@@ -225,29 +260,41 @@ void pumpShankStream() {
 }
 
 void loop() {
-  pumpShankStream();   // keep draining even between our own IMU samples
+  // Collect only while a host has the USB port open. Closing it idles both boards
+  // (the slave via the keepalive timing out) so the IMUs aren't run unobserved.
+  if (!Serial) {
+    if (collecting) stopCollecting();
+    return;
+  }
+  if (!collecting) startCollecting();
 
-  // Run the thigh filter at the sensor's full rate for smoothness; cache the latest
-  // state. Emission is throttled separately, below.
-  if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
-    float ax, ay, az, gx, gy, gz;
-    readAccel(ax, ay, az);
-    readGyro(gx, gy, gz);              // deg/s, handedness-corrected
-    gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
-    thighAx = ax; thighAy = ay; thighAz = az;   // cache raw accel for the emit
-
-    unsigned long now = micros();
-    float dt = (now - lastMicros) * 1e-6f;
-    lastMicros = now;
-    if (dt <= 0 || dt > 0.5f) dt = 1.0f / 104.0f;
-
-    mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+  // Keep the slave awake while we're collecting (it idles if these stop arriving).
+  if (millis() - lastKeepAliveMs >= KEEPALIVE_MS) {
+    lastKeepAliveMs = millis();
+    Serial1.write('S');
   }
 
-  // Emit one merged PC line at a fixed 50 Hz, decoupled from the sensor rate.
+  pumpShankStream();   // keep draining the shank stream
+
+  // Sample the thigh IMU, filter, and emit -- all at a fixed 50 Hz (symmetric with
+  // the slave; neither board runs faster than the other).
   unsigned long tnow = micros();
   if (tnow - lastEmitUs >= EMIT_PERIOD_US) {
     lastEmitUs = tnow;
+
+    if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
+      float ax, ay, az, gx, gy, gz;
+      readAccel(ax, ay, az);
+      readGyro(gx, gy, gz);           // deg/s, handedness-corrected
+      gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
+      thighAx = ax; thighAy = ay; thighAz = az;   // cache raw accel for the emit
+
+      float dt = (tnow - lastMicros) * 1e-6f;
+      lastMicros = tnow;
+      if (dt <= 0 || dt > 0.5f) dt = 1.0f / 50.0f;
+
+      mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+    }
 
     pumpShankStream();                // grab the freshest packet before emitting
     // Age the packet against a timestamp taken AFTER the final pump: that pump can

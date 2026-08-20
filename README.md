@@ -15,14 +15,15 @@ the boards in a precise, repeatable orientation.
 
 - 2× **Arduino Nano 33 BLE Rev2** (onboard **BMI270** accel+gyro; BMM150
   magnetometer is present but **unused**).
-- UART between the boards (`Serial1`, **115200 baud**). The slave streams and the
-  master only listens, so a single data line plus ground is all that's needed:
+- UART between the boards (`Serial1`, **115200 baud**), **both directions wired**:
+  the slave streams data to the master, and the master sends a keepalive to the
+  slave so it only runs during a collection (see "Collect-on-demand" below):
 
   ```
-  Slave TX (D1)  ->  Master RX (D0)
+  Slave TX (D1)  ->  Master RX (D0)     # shank data stream
+  Master TX (D1) ->  Slave RX (D0)      # keepalive / start-stop
   Slave GND     <->  Master GND
   ```
-  (Master TX -> Slave RX is no longer used; harmless to leave connected.)
 - Master connects to the PC over USB.
 - Mount convention used in testing: board long axis along the limb long axis,
   USB port toward the hip, one board above and one below the knee. Exact rotation
@@ -281,8 +282,19 @@ rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
 [17..28] float ax,ay,az (little-endian, g, handedness-corrected)
 [29]     XOR checksum of bytes [1..28]
 ```
-The shank board **streams** these continuously; it is not polled. The master is a
-passive listener: each loop it drains its UART buffer, **resyncs on the `0xAA`
+**Collect-on-demand & rate.** The boards run their IMUs only while a collection is
+active, so nothing runs unobserved. "Active" = the master's **USB port is open** (the
+collector, GUI, or even the Serial Monitor holds it) — no PC-side command needed. On
+start the master calibrates + seeds fresh and forwards a **keepalive** to the slave
+(over `Master TX -> Slave RX`); the slave calibrates and streams while the keepalive
+arrives and idles when it stops (port closed / master reset). Both boards emit at a
+fixed **50 Hz** (down from ~104 Hz) for generous link + USB timing margin; the slave
+also self-heals a bad low-rate sensor start by re-initializing (no manual reset). LED:
+master lit = collecting; slave fast blink = active, slow blink = idle, solid = sensor
+stalled, 3 flashes = boot.
+
+The shank board **streams** its packets while active; it is not polled. The master is
+a passive listener on the data line: each loop it drains its UART buffer, **resyncs on the `0xAA`
 header**, validates the checksum, and keeps the freshest complete packet — it never
 blocks on the slave. A lost/extra byte fails one checksum and resyncs on the next
 header, so a glitch costs one packet, never a lasting desync. The master timestamps
