@@ -50,6 +50,19 @@ const unsigned long REINIT_EVERY_MS = 500;
 unsigned long lastSampleMs = 0;
 unsigned long lastReinitMs = 0;
 
+// Low-rate self-heal (the "I had to reset the sensor every session" fix). A healthy
+// BMI270 streams ~104 Hz; on a cold power-up it sometimes comes up misconfigured at
+// a low rate (~10 Hz) with bad data, which used to need a MANUAL board reset. The
+// master gets a fresh init for free every session (opening its USB port resets it),
+// but the slave free-runs from power with nothing to re-init it. This watchdog gives
+// the slave the same clean start automatically: if it streams fewer than
+// MIN_SAMPLES_PER_WINDOW in a RATE_WINDOW_MS window, force a full sensor re-init --
+// at boot AND mid-session, so a bad power-up state heals itself within ~1 s.
+const unsigned long RATE_WINDOW_MS         = 1000;
+const unsigned long MIN_SAMPLES_PER_WINDOW = 60;   // healthy ~104; below this = degraded
+unsigned long sampleCount  = 0;
+unsigned long rateWindowMs = 0;
+
 // Health indicator on the built-in LED (pin 13). The onboard RGB LED is dead on
 // this unit, so state is encoded as BLINK PATTERN instead of colour, which stays
 // unambiguous with a single LED:
@@ -165,17 +178,33 @@ void setup() {
   }
 
   calibrateGyroBias();                 // keep the board STILL at startup
+  reinitSeed(2000);                    // wait for data, seed orientation from gravity
+  lastSampleMs = millis();
+  rateWindowMs = millis();
+}
 
+// Wait (up to timeout) for the accelerometer to produce data, then seed the
+// orientation from gravity. Shared by startup and the self-heal re-init.
+void reinitSeed(unsigned long timeout_ms) {
   lastMicros = micros();
   unsigned long t0 = millis();
-  while (!IMU.accelerationAvailable() && millis() - t0 < 2000) { ; }
+  while (!IMU.accelerationAvailable() && millis() - t0 < timeout_ms) { ; }
   if (IMU.accelerationAvailable()) {
     float ax, ay, az;
     readAccel(ax, ay, az);
     accX = ax; accY = ay; accZ = az;
     seedFromAccel(ax, ay, az);
   }
+}
+
+// Full sensor re-init: re-configure the BMI270 (restores its ~104 Hz output rate
+// if it came up wrong) and re-seed. This is what a manual board reset was doing
+// by hand; the watchdogs call it automatically.
+void reinitIMU() {
+  IMU.begin();
+  reinitSeed(300);
   lastSampleMs = millis();
+  lastReinitMs = millis();
 }
 
 inline void sendPacket() {
@@ -195,6 +224,15 @@ inline void sendPacket() {
 }
 
 void loop() {
+  // Rate watchdog: once per window, re-init the sensor if too few samples streamed.
+  // Heals a bad low-rate power-up (~10 Hz) automatically, no manual reset needed.
+  unsigned long tw = millis();
+  if (tw - rateWindowMs >= RATE_WINDOW_MS) {
+    if (sampleCount < MIN_SAMPLES_PER_WINDOW) reinitIMU();
+    sampleCount = 0;
+    rateWindowMs = millis();
+  }
+
   // Free-running: update orientation on each IMU sample and stream one packet.
   // No RX handling -- the master is a passive listener on this link now.
   if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
@@ -213,6 +251,7 @@ void loop() {
     mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
     sendPacket();                     // stream the freshly-updated orientation
 
+    sampleCount++;
     lastSampleMs = millis();
     // healthy: steady heartbeat blink (non-blocking toggle)
     if (millis() - lastBlinkMs >= HEARTBEAT_MS) {
@@ -224,14 +263,10 @@ void loop() {
   }
 
   // No new IMU data. If the sensor has been silent long enough to be a real stall
-  // (not just the sub-10 ms wait between samples), make it visible and try to
-  // recover the sensor rather than spin silently for seconds.
+  // (not just the sub-10 ms wait between samples), make it visible and recover it.
   unsigned long nowMs = millis();
   if (nowMs - lastSampleMs > STALL_WARN_MS) {
     digitalWrite(LED_BUILTIN, HIGH);              // SOLID on = sensor stalled
-    if (nowMs - lastReinitMs > REINIT_EVERY_MS) {
-      lastReinitMs = nowMs;
-      IMU.begin();                                // re-init to un-stick the BMI270
-    }
+    if (nowMs - lastReinitMs > REINIT_EVERY_MS) reinitIMU();
   }
 }
