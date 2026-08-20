@@ -50,10 +50,19 @@ const float ACC_TRUST_FULL_G = 0.10f;   // within this of 1 g -> trust accel ful
 const float ACC_TRUST_ZERO_G = 0.60f;   // beyond this -> gyro only (no correction)
 
 // A 30-byte reply at 115200 baud is ~2.6 ms on the wire, so a healthy round-trip
-// (header scan + body + slave response latency) is ~3-4 ms. 6 ms leaves margin for
-// that yet still fails well inside the ~9.6 ms master loop: a lost poll is dropped
-// and forward-filled rather than stalling the loop waiting on a desynced slave.
-const unsigned long SLAVE_TIMEOUT_US = 6000;
+// is ~3-4 ms. But the slave only answers 'R' at points in its OWN ~104 Hz loop,
+// and the mbed RTOS underneath can add sporadic multi-ms stalls, so a reply can
+// legitimately arrive several ms late. A tight window drops those as "invalid".
+//
+// We deliberately trade peak rate for completeness: this window is wide enough to
+// catch a reply delayed by nearly a full slave loop. It is almost free -- the
+// master loop is gated by its own IMU (~9.6 ms/sample), so a wider timeout only
+// extends the occasional LATE poll, not every one; the average rate stays high.
+// Knee flexion has negligible content above ~10 Hz, so even the worst-case rate
+// this implies is ample. Widen it further (and accept a lower rate) if valid% is
+// still low; the failure diagnostics below (rtt on a dropped poll) tell you which
+// way to tune -- see pollSlave().
+const unsigned long SLAVE_TIMEOUT_US = 12000;
 
 // Read sensors with the reflection fixed (negate x -> right-handed frame).
 inline void readAccel(float &ax, float &ay, float &az) {
@@ -177,6 +186,13 @@ void setup() {
 // the misalignment persisted (each poll's "30 bytes" straddled a packet boundary),
 // which is what makes rtt climb and validity fall together over a session. With a
 // header resync a glitch costs one packet, not a self-sustaining run of them.
+//
+// rtt is ALWAYS set to the elapsed poll time, even on failure, so a dropped sample
+// is self-diagnosing in the log: rtt near SLAVE_TIMEOUT_US means the slave never
+// answered in time (too-slow response -> widen the window / lower the rate), while
+// a SMALL rtt on a dropped sample means bytes arrived but were corrupt (checksum /
+// framing -> a baud, wiring, or GND problem). A moderate rtt with a valid sample is
+// the healthy case.
 unsigned long pollSlave(float q[4], float a[3], unsigned long &rtt) {
   while (Serial1.available()) Serial1.read();   // drop stale bytes before framing
   unsigned long tReq = micros();
@@ -189,7 +205,7 @@ unsigned long pollSlave(float q[4], float a[3], unsigned long &rtt) {
   while ((micros() - tReq) < SLAVE_TIMEOUT_US) {
     if (Serial1.available() && Serial1.read() == 0xAA) { haveHeader = true; break; }
   }
-  if (!haveHeader) return 0;
+  if (!haveHeader) { rtt = micros() - tReq; return 0; }   // no reply in the window
 
   uint8_t pkt[30];
   pkt[0] = 0xAA;
@@ -198,13 +214,13 @@ unsigned long pollSlave(float q[4], float a[3], unsigned long &rtt) {
     if (Serial1.available()) pkt[idx++] = Serial1.read();
   }
   unsigned long tResp = micros();
-  if (idx < 30) return 0;
+  rtt = tResp - tReq;
+  if (idx < 30) return 0;                        // body didn't finish in the window
   uint8_t cs = 0;
-  for (int i = 1; i <= 28; i++) cs ^= pkt[i];   // checksum guards a false 0xAA match
-  if (cs != pkt[29]) return 0;
+  for (int i = 1; i <= 28; i++) cs ^= pkt[i];    // checksum guards a false 0xAA match
+  if (cs != pkt[29]) return 0;                   // bytes arrived but were corrupt
   memcpy(q, &pkt[1], 16);
   memcpy(a, &pkt[17], 12);
-  rtt = tResp - tReq;
   return (tReq + tResp) / 2;
 }
 

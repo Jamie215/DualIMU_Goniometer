@@ -672,7 +672,12 @@ def monitor(port, baud=115200, zero_seconds=1.5):
             n += 1
             if not is_valid(rec):
                 nbad += 1
-                print(f"\r  [shank INVALID]  valid:{100*(n-nbad)/n:4.0f}%  "
+                # rtt is the master's elapsed poll time even on a drop: near the
+                # firmware timeout => the slave answered too late; small => bytes
+                # arrived but were corrupt (framing/checksum). Threshold is well
+                # above a healthy ~3-4 ms round-trip and below the 12 ms timeout.
+                cause = 'slave too slow' if rec['rtt'] >= 8000 else 'corrupt/framing'
+                print(f"\r  [shank INVALID: {cause:15s}]  valid:{100*(n-nbad)/n:4.0f}%  "
                       f"rtt:{rec['rtt']:5d}us      ", end='')
                 continue
             it = _incl_from_zero(gravity_from_quat(rec, 'thigh'), d_t)

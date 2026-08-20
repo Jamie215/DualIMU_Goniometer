@@ -281,10 +281,12 @@ rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
 [29]     XOR checksum of bytes [1..28]
 ```
 Master requests with a single `'R'` byte, **resyncs on the `0xAA` header**, then
-reads the 29-byte body within `SLAVE_TIMEOUT_US` (6 ms); the slave sample is
+reads the 29-byte body within `SLAVE_TIMEOUT_US` (12 ms); the slave sample is
 bracketed at `(t_req+t_resp)/2`. Scanning for the header (rather than reading 30
 bytes blind) means one corrupted or dropped byte costs a single packet instead of
-desyncing every packet that follows.
+desyncing every packet that follows. `rtt_us` is reported even on a dropped poll:
+near the timeout means the slave answered too late, a small value means the bytes
+were corrupt — so an "invalid" shank sample says *why* it dropped.
 
 **Master → PC line (text, 18 fields):**
 ```
@@ -348,8 +350,19 @@ recording:
    the `0xAA` header so one glitch costs one packet, not a run (`pollSlave()`); and
    return `Serial1` to **115200** for ~4× the timing margin — a 30-byte reply at
    104 Hz needs only ~25 kbaud, so the lower rate costs nothing and drifts far
-   less. `SLAVE_TIMEOUT_US` is **6 ms**: past a healthy ~3-4 ms round-trip the poll
-   fails fast and the sample is forward-filled instead of stalling the master loop.
+   less.
+
+   A second, independent cause of dropped shank samples is **response latency**,
+   not corruption: the slave only answers `'R'` at points in its own ~104 Hz loop,
+   and the mbed RTOS can add sporadic multi-ms stalls, so a reply sometimes arrives
+   several ms late. A tight window discards those. Because the master loop is gated
+   by its own IMU (~9.6 ms/sample), a *wider* window only extends the occasional
+   late poll — average rate barely changes — and knee flexion needs nowhere near
+   100 Hz anyway. So `SLAVE_TIMEOUT_US` is set to **12 ms** (catches a reply delayed
+   by nearly a full slave loop) rather than optimized for peak rate. `rtt_us` is
+   logged even on a drop (near-timeout = too-slow slave; small = corrupt bytes), so
+   `valid%` failures are self-classifying — widen the window / lower the rate for
+   the former, check baud / wiring / GND for the latter.
 
 7. **Consolidated to one reliable method: gravity-in-board from the fused
    quaternion.** The project had accumulated four selectable behaviors
