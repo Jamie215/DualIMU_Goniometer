@@ -35,6 +35,20 @@ Calibration is two-phase (both handled here, no reflashing needed):
      to reveal its in-plane forward direction f_i. A segment that stays still just
      contributes ~0 to the angle.
 
+What "0 deg" means (IMPORTANT):
+  The angle is RELATIVE to the pose held during the static zero -- whatever
+  posture you hold becomes 0 deg, regardless of the true anatomical geometry. A
+  leg that is anatomically straight but sits at a residual angle (recurvatum, a
+  patient who can't fully extend) still reads 0 deg here. So every reading is a
+  CHANGE FROM the zeroing pose, not an absolute femur-vs-tibia angle. This is
+  correct for ROM (max - min), rep counting, and movement quality -- all
+  difference-based, so the reference cancels -- but the readings are NOT absolute
+  clinical angles, and are not comparable across sessions that were zeroed on
+  different poses. Recovering the true anatomical zero would require an external
+  reference (a manual goniometer on the leg, or a fixture that defines true
+  extension); the two IMUs alone cannot observe it, because the method is
+  deliberately blind to how each board is mounted relative to the bone.
+
 Dropout handling:
   - A sample is INVALID if the shank timestamp is 0 (timeout) OR the shank
     quaternion is all zeros (a packet that carried no real data). A real unit

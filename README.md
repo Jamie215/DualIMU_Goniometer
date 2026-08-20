@@ -208,6 +208,33 @@ but tilt combined with out-of-sagittal-plane motion steers part of the true join
 rotation into the unobservable yaw direction, where gravity cannot see it — the
 one case a gravity-only method fundamentally cannot recover.
 
+### What "0°" means (relative, not absolute)
+
+The angle is **relative to the pose held during the static zero** — whatever
+posture you hold at calibration becomes 0°, regardless of the true anatomical
+geometry. A leg that is anatomically straight but sits at a residual angle
+(recurvatum, or a patient who can't fully extend) still reads **0°** here. Every
+reading is therefore a **change from the zeroing pose**, not an absolute
+femur-vs-tibia angle.
+
+This is exactly right for what a session actually measures — **ROM (max − min),
+rep counting, gait, and movement quality** are all difference-based, so the
+reference cancels and the choice of zero doesn't matter. What it does **not**
+give:
+
+- an **absolute clinical angle** (e.g. "flexion contracture of 10°"), which is a
+  statement about the zero itself;
+- comparability **across sessions** zeroed on different poses, since each
+  session's 0° may correspond to a different real angle.
+
+Recovering a true anatomical zero would require an **external reference** — a
+manual goniometer on the leg, or a fixture that physically defines full
+extension. The two IMUs alone cannot observe it: the method is deliberately blind
+to how each board is mounted relative to the bone (that blindness is exactly what
+makes it placement-independent), so there is no anatomical landmark in the data
+for it to find absolute zero from. For this proof of concept we accept the
+relative zero and rely on the difference-based readings above.
+
 ### Why the quaternion (not the raw accelerometer)
 
 Gravity-in-board is taken from the Mahony quaternion, which fuses accel + gyro,
