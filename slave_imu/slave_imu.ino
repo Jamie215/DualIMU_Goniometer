@@ -50,20 +50,17 @@ const unsigned long REINIT_EVERY_MS = 500;
 unsigned long lastSampleMs = 0;
 unsigned long lastReinitMs = 0;
 
-// Onboard RGB LED health indicator (Nano 33 BLE Rev2). The RGB pins are
-// ACTIVE-LOW -- driving a channel LOW turns it ON -- so this helper inverts for
-// readability. State encoding, visible across the room, makes the slave's health
-// unmistakable and disambiguates the failure modes:
-//   GREEN solid  = healthy, streaming
-//   RED   solid  = sensor stalled (no new IMU data; loop still running, re-init firing)
-//   BLUE  3x blink at (re)start = boot -- at plug-in it confirms this firmware is
-//                 flashed; MID-SESSION it means the board reset (brown-out/fault)
-//   dark/frozen  = loop not running at all (hard fault) or unpowered
-inline void rgb(bool r, bool g, bool b) {
-  digitalWrite(LEDR, r ? LOW : HIGH);
-  digitalWrite(LEDG, g ? LOW : HIGH);
-  digitalWrite(LEDB, b ? LOW : HIGH);
-}
+// Health indicator on the built-in LED (pin 13). The onboard RGB LED is dead on
+// this unit, so state is encoded as BLINK PATTERN instead of colour, which stays
+// unambiguous with a single LED:
+//   steady HEARTBEAT blink = healthy, streaming
+//   SOLID on               = sensor stalled (loop running, re-init firing)
+//   3 fast flashes at start = boot -- at plug-in confirms this firmware is flashed;
+//                             mid-session means the board reset (brown-out/fault)
+//   OFF / frozen           = loop not running (hard fault) or unpowered
+const unsigned long HEARTBEAT_MS = 150;   // healthy blink half-period (~3 Hz)
+bool ledState = false;
+unsigned long lastBlinkMs = 0;
 
 // Arduino_BMI270_BMM150 returns a REFLECTED (left-handed) frame; negate x of
 // accel AND gyro to restore a right-handed frame for the quaternion filter.
@@ -151,20 +148,20 @@ void setup() {
                                 // from 460800 for async-clock timing margin -- see
                                 // master_imu.ino for the rationale.
 
-  pinMode(LEDR, OUTPUT); pinMode(LEDG, OUTPUT); pinMode(LEDB, OUTPUT);
-  rgb(0, 0, 0);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
-  // Boot blink: 3 BLUE flashes on every (re)start. Seen at plug-in it confirms
+  // Boot blink: 3 fast flashes on every (re)start. Seen at plug-in it confirms
   // THIS firmware is flashed; seen MID-SESSION it means the board just reset
-  // (brown-out / fault -> slave power), vs. a sensor hang which holds RED solid.
+  // (brown-out / fault -> slave power), vs. a sensor hang which holds it SOLID.
   for (int i = 0; i < 3; i++) {
-    rgb(0, 0, 1); delay(60);
-    rgb(0, 0, 0); delay(120);
+    digitalWrite(LED_BUILTIN, HIGH); delay(60);
+    digitalWrite(LED_BUILTIN, LOW);  delay(120);
   }
 
   if (!IMU.begin()) {
-    while (1) { rgb(1, 0, 0); delay(150);   // RED blink forever = IMU init failed
-                rgb(0, 0, 0); delay(150); }
+    while (1) { digitalWrite(LED_BUILTIN, HIGH); delay(150);   // fast blink = IMU init failed
+                digitalWrite(LED_BUILTIN, LOW);  delay(150); }
   }
 
   calibrateGyroBias();                 // keep the board STILL at startup
@@ -217,7 +214,12 @@ void loop() {
     sendPacket();                     // stream the freshly-updated orientation
 
     lastSampleMs = millis();
-    rgb(0, 1, 0);                     // healthy: GREEN
+    // healthy: steady heartbeat blink (non-blocking toggle)
+    if (millis() - lastBlinkMs >= HEARTBEAT_MS) {
+      lastBlinkMs = millis();
+      ledState = !ledState;
+      digitalWrite(LED_BUILTIN, ledState);
+    }
     return;
   }
 
@@ -226,7 +228,7 @@ void loop() {
   // recover the sensor rather than spin silently for seconds.
   unsigned long nowMs = millis();
   if (nowMs - lastSampleMs > STALL_WARN_MS) {
-    rgb(1, 0, 0);                                 // RED = sensor stalled (visible)
+    digitalWrite(LED_BUILTIN, HIGH);              // SOLID on = sensor stalled
     if (nowMs - lastReinitMs > REINIT_EVERY_MS) {
       lastReinitMs = nowMs;
       IMU.begin();                                // re-init to un-stick the BMI270
