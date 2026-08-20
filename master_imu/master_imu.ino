@@ -159,6 +159,7 @@ void setup() {
     Serial.println("ERR,IMU init failed");
     while (1) { ; }
   }
+  Serial.println("# MASTER fw: stream-2 (shank streams; age_us fail-safe)");
   Serial.println("# MASTER cols: D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,"
                  "t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us");
 
@@ -234,8 +235,12 @@ void loop() {
     // Age the packet against a timestamp taken AFTER the final pump: that pump can
     // parse a packet whose micros() stamp is later than `now` (captured above), and
     // an unsigned `now - shankRecvUs` would then underflow to ~4.29e9 and look stale.
+    // Fail SAFE regardless: if tRef ever reads before the packet stamp (reordering
+    // or the ~71 min micros() rollover), clamp age to 0 (just-received) instead of
+    // letting an unsigned wrap flag a good sample invalid.
     unsigned long tRef = micros();
-    unsigned long age = (shankRecvUs == 0) ? 0 : (tRef - shankRecvUs);
+    unsigned long age = (shankRecvUs == 0 || tRef < shankRecvUs) ? 0
+                                                                 : (tRef - shankRecvUs);
     bool shankFresh = (shankRecvUs != 0) && (age <= SHANK_STALE_US);
 
     Serial.print("D,");
