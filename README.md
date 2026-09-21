@@ -76,8 +76,9 @@ What it adds over the CLI:
 - **Port scan** — probes each serial port for valid `D` lines and picks the
   master automatically. (Only the master is on USB; a dead slave link shows up
   as a low shank-valid %, not a second port.)
-- **Consistent 100 Hz** — the jittery ~104 Hz device stream is resampled onto a
-  fixed 10 ms grid, so both the CSV and the plots are a clean 100 Hz record.
+- **Consistent 50 Hz** — the fixed 50 Hz device stream is resampled onto a
+  fixed 20 ms grid, so both the CSV and the plots are a clean 50 Hz record
+  regardless of source jitter.
 - **Obvious calibration** — a colour-coded banner drives the phases with a live
   countdown: amber **ZEROING** (hold straight & still) → amber **SWEEP** (bend
   knee + hip, with a live shank-tilt readout) → green **RUNNING**.
@@ -275,7 +276,7 @@ rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
 
 ## Data format / wire protocol
 
-**Slave → master stream (binary, 30 bytes/packet, ~104 Hz):**
+**Slave → master stream (binary, 30 bytes/packet, fixed 50 Hz):**
 ```
 [0]      0xAA header
 [1..16]  float q0..q3   (little-endian, w,x,y,z)
