@@ -1,22 +1,22 @@
 /*
- * KNEE ANGLE - SLAVE (shank)  [UART, 6-DOF quaternion + raw gravity]
+ * KNEE ANGLE - PERIPHERAL (shank)  [UART, 6-DOF quaternion + raw gravity]
  * Board: Arduino Nano 33 BLE Rev2  (onboard BMI270; magnetometer unused)
  *
  * STREAMS its orientation quaternion AND raw accelerometer vector at a fixed 50 Hz
- * while a collection is active -- it does NOT wait to be polled. The master reads
+ * while a collection is active -- it does NOT wait to be polled. The central reads
  * whatever complete packets are already in its UART buffer and uses the freshest,
- * never blocking on the slave; a slave stall just ages the newest packet.
+ * never blocking on the peripheral; a peripheral stall just ages the newest packet.
  *
- * Collect-on-demand: the slave runs the IMU only while the master's keepalive ('S')
- * is arriving (i.e. while the PC has the master's USB port open). It idles when the
+ * Collect-on-demand: the peripheral runs the IMU only while the central's keepalive ('S')
+ * is arriving (i.e. while the PC has the central's USB port open). It idles when the
  * keepalive stops or on 'X', so the sensor isn't run while nothing is observing.
  *
  * Packet (30 bytes), framed for resync on a free-running stream:
  *   [0] 0xAA, [1..16] float q0..q3, [17..28] float ax,ay,az, [29] XOR of [1..28]
- * (See master_imu.ino for the handedness note.)
+ * (See central_imu.ino for the handedness note.)
  *
- * Wiring (BOTH directions): Slave TX(D1)->Master RX(D0) for the stream, and
- * Master TX(D1)->Slave RX(D0) for the keepalive, plus GND<->GND.
+ * Wiring (BOTH directions): Peripheral TX(D1)->Central RX(D0) for the stream, and
+ * Central TX(D1)->Peripheral RX(D0) for the keepalive, plus GND<->GND.
  */
 
 #include "Arduino_BMI270_BMM150.h"
@@ -32,7 +32,7 @@ float gyroBias[3] = {0.0f, 0.0f, 0.0f};
 const float BIAS_SANITY_DPS = 3.0f;
 
 // Accelerometer-as-gravity trust vs how far |accel| is from 1 g. SOFT gate
-// (matches master): full trust near static, ramping to zero as linear
+// (matches central): full trust near static, ramping to zero as linear
 // acceleration grows, so the filter is always partly drift-corrected while the
 // gyro carries the fast part -- no open-loop drift/snap-back after a fast move.
 const float ACC_TRUST_FULL_G = 0.10f;
@@ -63,10 +63,10 @@ unsigned long rateWindowMs = 0;
 const unsigned long STREAM_PERIOD_US = 20000;   // 50 Hz
 unsigned long lastSendUs = 0;
 
-// Collect-on-demand. The slave runs the IMU only while the master says a collection
-// is active. The master forwards a keepalive ('S') while its USB port is open; the
-// slave activates on it and idles once the keepalive stops arriving (port closed,
-// master reset, or unplugged). 'X' idles immediately. This keeps the sensor from
+// Collect-on-demand. The peripheral runs the IMU only while the central says a collection
+// is active. The central forwards a keepalive ('S') while its USB port is open; the
+// peripheral activates on it and idles once the keepalive stops arriving (port closed,
+// central reset, or unplugged). 'X' idles immediately. This keeps the sensor from
 // running while nothing is observing, and keeps both boards in lockstep.
 bool active = false;
 unsigned long lastCmdMs = 0;
@@ -166,16 +166,16 @@ void mahonyUpdate(float gx, float gy, float gz,
 }
 
 void setup() {
-  Serial1.begin(115200);        // board-to-board link (must match master). Lowered
+  Serial1.begin(115200);        // board-to-board link (must match central). Lowered
                                 // from 460800 for async-clock timing margin -- see
-                                // master_imu.ino for the rationale.
+                                // central_imu.ino for the rationale.
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
   // Boot blink: 3 fast flashes on every (re)start. Seen at plug-in it confirms
   // THIS firmware is flashed; seen MID-SESSION it means the board just reset
-  // (brown-out / fault -> slave power), vs. a sensor hang which holds it SOLID.
+  // (brown-out / fault -> peripheral power), vs. a sensor hang which holds it SOLID.
   for (int i = 0; i < 3; i++) {
     digitalWrite(LED_BUILTIN, HIGH); delay(60);
     digitalWrite(LED_BUILTIN, LOW);  delay(120);
@@ -185,7 +185,7 @@ void setup() {
     while (1) { digitalWrite(LED_BUILTIN, HIGH); delay(150);   // fast blink = IMU init failed
                 digitalWrite(LED_BUILTIN, LOW);  delay(150); }
   }
-  // No calibration or streaming at boot -- the board idles until the master signals
+  // No calibration or streaming at boot -- the board idles until the central signals
   // a collection has begun (see activate()), so the IMU isn't run while unobserved.
 }
 
@@ -242,7 +242,7 @@ inline void sendPacket() {
 }
 
 void loop() {
-  // Follow the master's collect/idle commands. 'S' (start / keepalive) keeps us
+  // Follow the central's collect/idle commands. 'S' (start / keepalive) keeps us
   // active; 'X' idles immediately; no keepalive within CMD_TIMEOUT_MS also idles.
   while (Serial1.available()) {
     char c = Serial1.read();

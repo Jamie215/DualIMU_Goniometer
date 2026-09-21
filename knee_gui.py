@@ -2,13 +2,13 @@
 """
 KNEE GONIOMETER -- live collection + visualization GUI  [Tkinter + Matplotlib]
 
-A proof-of-concept front end around knee_collector_uart.py. It finds the master
+A proof-of-concept front end around knee_collector_uart.py. It finds the central
 board's serial port, runs the same two-phase calibration and gravity-referenced
 angle math as the CLI, and adds what a testing session wants:
 
   * PORT SCAN         -- probe each serial port for valid 'D' lines and pick the
-                         master automatically (only the master is on USB; the
-                         slave is diagnosed *through* it via shank-valid %).
+                         central automatically (only the central is on USB; the
+                         peripheral is diagnosed *through* it via shank-valid %).
   * CONSISTENT 50 Hz  -- the device streams at a fixed 50 Hz; it is resampled onto
                          a fixed 20 ms grid, so both the CSV and the plot are a
                          clean 50 Hz record regardless of source jitter or transient
@@ -24,7 +24,7 @@ angle math as the CLI, and adds what a testing session wants:
                  were real either way.
   * PAUSE + ERRORS    -- Pause freezes logging (display stays live); a red
                          banner names the exact fault (no data / wrong firmware /
-                         dead slave link) using the shared diagnose_stream().
+                         dead peripheral link) using the shared diagnose_stream().
   * AUTO-SAVE         -- a timestamped CSV is opened at connect; "Save copy..."
                          relocates it. A crash never loses a session.
 
@@ -109,7 +109,7 @@ class SampleGate:
 
 # --------------------------------------------------------------------------- #
 # Synthetic serial source for demoing / testing without hardware. Emits the same
-# 18-field 'D' lines the master firmware does: a slowly flexing knee, with a
+# 18-field 'D' lines the central firmware does: a slowly flexing knee, with a
 # periodic ~0.4 s shank dropout so the fill/gap modes and the error banner have
 # something to react to.
 # --------------------------------------------------------------------------- #
@@ -196,7 +196,7 @@ def scan_ports(seconds=1.2):
                 results.append((p.device, -1, f"{p.device}  (busy/err: {exc})"))
                 continue
             if valid > 0:
-                tag = f"master OK ({valid} valid)"
+                tag = f"central OK ({valid} valid)"
             elif parsed > 0:
                 tag = "streaming, shank link down"
             elif seen > 0:

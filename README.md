@@ -2,8 +2,8 @@
 
 Two Arduino Nano 33 BLE Rev2 boards (one on the thigh, one on the shank) measure
 knee flexion angle. Each board runs a 6-DOF orientation filter; the **shank
-board (slave)** streams its state to the **thigh board (master)** over a wired UART
-link, and the master merges both segments and streams them to a PC, where
+board (peripheral)** streams its state to the **thigh board (central)** over a wired UART
+link, and the central merges both segments and streams them to a PC, where
 `knee_collector_uart.py` computes and logs the knee angle.
 
 The design goal is a **placement-independent** angle: you should not have to mount
@@ -16,15 +16,15 @@ the boards in a precise, repeatable orientation.
 - 2× **Arduino Nano 33 BLE Rev2** (onboard **BMI270** accel+gyro; BMM150
   magnetometer is present but **unused**).
 - UART between the boards (`Serial1`, **115200 baud**), **both directions wired**:
-  the slave streams data to the master, and the master sends a keepalive to the
-  slave so it only runs during a collection (see "Collect-on-demand" below):
+  the peripheral streams data to the central, and the central sends a keepalive to the
+  peripheral so it only runs during a collection (see "Collect-on-demand" below):
 
   ```
-  Slave TX (D1)  ->  Master RX (D0)     # shank data stream
-  Master TX (D1) ->  Slave RX (D0)      # keepalive / start-stop
-  Slave GND     <->  Master GND
+  Peripheral TX (D1)  ->  Central RX (D0)     # shank data stream
+  Central TX (D1) ->  Peripheral RX (D0)      # keepalive / start-stop
+  Peripheral GND     <->  Central GND
   ```
-- Master connects to the PC over USB.
+- Central connects to the PC over USB.
 - Mount convention used in testing: board long axis along the limb long axis,
   USB port toward the hip, one board above and one below the knee. Exact rotation
   / position does **not** need to match between boards (see "How it works").
@@ -33,12 +33,12 @@ the boards in a precise, repeatable orientation.
 
 ## Quick start
 
-1. **Flash** `master_imu/master_imu.ino` to the thigh board and
-   `slave_imu/slave_imu.ino` to the shank board (Arduino IDE, board = "Arduino
+1. **Flash** `central_imu/central_imu.ino` to the thigh board and
+   `peripheral_imu/peripheral_imu.ino` to the shank board (Arduino IDE, board = "Arduino
    Nano 33 BLE", library **Arduino_BMI270_BMM150**). Confirm each reports
    *Done uploading*.
 2. On power-up / reset, **keep both boards still for ~4 s** — they measure gyro
-   bias then. The master prints `# master gyro bias dps: ...`.
+   bias then. The central prints `# central gyro bias dps: ...`.
 3. **Sanity check** the link and signal:
    ```
    python knee_collector_uart.py --port /dev/ttyACM0 --monitor
@@ -66,7 +66,7 @@ end over the same angle math. It is the easiest way to run a collection:
 
 ```
 pip install -r requirements.txt
-python knee_gui.py                 # scan for the master port and go
+python knee_gui.py                 # scan for the central port and go
 python knee_gui.py --simulate      # no hardware: synthetic flexing-knee source
 python knee_gui.py --selftest      # headless: sample-gate + source logic
 ```
@@ -74,7 +74,7 @@ python knee_gui.py --selftest      # headless: sample-gate + source logic
 What it adds over the CLI:
 
 - **Port scan** — probes each serial port for valid `D` lines and picks the
-  master automatically. (Only the master is on USB; a dead slave link shows up
+  central automatically. (Only the central is on USB; a dead peripheral link shows up
   as a low shank-valid %, not a second port.)
 - **Consistent 50 Hz** — the fixed 50 Hz device stream is resampled onto a
   fixed 20 ms grid, so both the CSV and the plots are a clean 50 Hz record
@@ -98,7 +98,7 @@ What it adds over the CLI:
   a new file is written. (There is no pause/resume: the display only rolls while
   a session is actually collecting.)
 - **Errors** — a red banner names the exact fault (no data / wrong firmware /
-  dead slave link), using the same diagnosis as the CLI.
+  dead peripheral link), using the same diagnosis as the CLI.
 - **Auto-save** — each session auto-saves to `knee_YYYYMMDD_HHMMSS.csv`;
   **Save copy…** relocates the current one. A crash never loses a session.
 
@@ -276,7 +276,7 @@ rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
 
 ## Data format / wire protocol
 
-**Slave → master stream (binary, 30 bytes/packet, fixed 50 Hz):**
+**Peripheral → central stream (binary, 30 bytes/packet, fixed 50 Hz):**
 ```
 [0]      0xAA header
 [1..16]  float q0..q3   (little-endian, w,x,y,z)
@@ -284,27 +284,27 @@ rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
 [29]     XOR checksum of bytes [1..28]
 ```
 **Collect-on-demand & rate.** The boards run their IMUs only while a collection is
-active, so nothing runs unobserved. "Active" = the master's **USB port is open** (the
+active, so nothing runs unobserved. "Active" = the central's **USB port is open** (the
 collector, GUI, or even the Serial Monitor holds it) — no PC-side command needed. On
-start the master calibrates + seeds fresh and forwards a **keepalive** to the slave
-(over `Master TX -> Slave RX`); the slave calibrates and streams while the keepalive
-arrives and idles when it stops (port closed / master reset). Both boards emit at a
-fixed **50 Hz** (down from ~104 Hz) for generous link + USB timing margin; the slave
+start the central calibrates + seeds fresh and forwards a **keepalive** to the peripheral
+(over `Central TX -> Peripheral RX`); the peripheral calibrates and streams while the keepalive
+arrives and idles when it stops (port closed / central reset). Both boards emit at a
+fixed **50 Hz** (down from ~104 Hz) for generous link + USB timing margin; the peripheral
 also self-heals a bad low-rate sensor start by re-initializing (no manual reset). LED:
-master lit = collecting; slave fast blink = active, slow blink = idle, solid = sensor
+central lit = collecting; peripheral fast blink = active, slow blink = idle, solid = sensor
 stalled, 3 flashes = boot.
 
-The shank board **streams** its packets while active; it is not polled. The master is
+The shank board **streams** its packets while active; it is not polled. The central is
 a passive listener on the data line: each loop it drains its UART buffer, **resyncs on the `0xAA`
 header**, validates the checksum, and keeps the freshest complete packet — it never
-blocks on the slave. A lost/extra byte fails one checksum and resyncs on the next
-header, so a glitch costs one packet, never a lasting desync. The master timestamps
+blocks on the peripheral. A lost/extra byte fails one checksum and resyncs on the next
+header, so a glitch costs one packet, never a lasting desync. The central timestamps
 each packet on its own clock when parsed; if the freshest packet is older than
 `SHANK_STALE_US` (30 ms) the shank is reported invalid (zeros) for the collector to
 forward-fill. The line's last field is that packet's **age** in µs — small is
-healthy, large (or a run of invalids) means the slave has stalled.
+healthy, large (or a run of invalids) means the peripheral has stalled.
 
-**Master → PC line (text, 18 fields):**
+**Central → PC line (text, 18 fields):**
 ```
 D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us
 ```
@@ -371,17 +371,17 @@ recording:
      masked the desync but added the thermal fragility.
    - **Too-tight response window.** With framing fixed, `valid%` rose to ~93% but
      the remaining drops showed the request round-trip hitting the *full* timeout —
-     the slave producing nothing in time, not corrupt bytes. Root cause: the slave
+     the peripheral producing nothing in time, not corrupt bytes. Root cause: the peripheral
      only answered a poll between chunks of its own loop, and the mbed RTOS adds
      sporadic multi-ms stalls, so a reply could arrive after any fixed deadline.
    - **The real fix — stream instead of poll.** Widening the deadline is an arms
-     race (and every stall stalls the master). Instead the slave now **streams** its
-     packet continuously and the master reads the freshest one already in its UART
-     buffer, never blocking. A slave stall no longer drops a sample — it just ages
+     race (and every stall stalls the central). Instead the peripheral now **streams** its
+     packet continuously and the central reads the freshest one already in its UART
+     buffer, never blocking. A peripheral stall no longer drops a sample — it just ages
      the newest packet; if that age exceeds `SHANK_STALE_US` (30 ms) the sample is
-     marked invalid and the collector forward-fills it. This decouples the master's
-     rate from the slave's latency entirely. Line field 18 is now the packet **age**
-     (`age_us`); a large age or a run of invalids localizes a stalled/dead slave.
+     marked invalid and the collector forward-fills it. This decouples the central's
+     rate from the peripheral's latency entirely. Line field 18 is now the packet **age**
+     (`age_us`); a large age or a run of invalids localizes a stalled/dead peripheral.
 
 7. **Consolidated to one reliable method: gravity-in-board from the fused
    quaternion.** The project had accumulated four selectable behaviors
@@ -425,7 +425,7 @@ shank board at a right angle to the thigh board reads ~90°.
 ## Files
 
 ```
-master_imu/master_imu.ino   thigh board: 6-DOF filter, reads slave stream, streams to PC
-slave_imu/slave_imu.ino     shank board: 6-DOF filter, streams packets over UART
+central_imu/central_imu.ino   thigh board: 6-DOF filter, reads peripheral stream, streams to PC
+peripheral_imu/peripheral_imu.ino     shank board: 6-DOF filter, streams packets over UART
 knee_collector_uart.py      PC collector: calibration, angle math, CSV, --selftest
 ```
