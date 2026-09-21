@@ -1,6 +1,9 @@
 # Calibration Redesign — Separated Hip + Knee Protocol
 
-**Status:** proposal for review (no code changed yet)
+**Status:** implemented on `claude/gracious-shannon-ypu8le` (separated hip/knee
+protocol; old combined single-sweep path removed; zero hold 5 s, sweep timeout
+12 s per user request). The section below is the original proposal, kept as the
+design record; the "Parameters" table reflects the shipped defaults.
 **Branch:** `claude/gracious-shannon-ypu8le`
 **Scope:** calibration only. The runtime angle math (`gravity_knee_angle`) and the
 serial/CSV formats are **unchanged**, so this is a low-risk change to *how* the
@@ -148,12 +151,13 @@ return f, planarity, coverage_deg    # or (None, …) if no sample cleared the g
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `ZERO_STILL_SECONDS` | 3.0 | quiet window required to accept the zero |
+| `CAL_SECONDS` | 5.0 | quiet window required to accept the zero |
 | `ZERO_STILL_TOL_DEG` | 1.0 | max gravity-direction spread counted as "still" |
-| `ZERO_MAX_WAIT` | 10.0 | fallback: accept quietest window, warn |
+| `ZERO_MAX_WAIT` | 15.0 | fallback: accept quietest window, warn |
 | `HIP_MIN_COVERAGE_DEG` | 25.0 | thigh tilt needed to learn `f_thigh` |
 | `KNEE_MIN_COVERAGE_DEG` | 60.0 | shank tilt needed to learn `f_shank` |
-| `PHASE_MAX_SECONDS` | 20.0 | per-phase timeout (advance + warn if short) |
+| `SWEEP_MIN_SECONDS` | 3.0 | don't advance a sweep before this even if covered |
+| `SWEEP_SECONDS` | 12.0 | per-sweep timeout (advance + warn if short) |
 | `SWEEP_MIN_ANGLE_DEG` | 5.0 | per-sample in-plane gate (unchanged) |
 | `PLANARITY_MIN` | 0.90 | below → out-of-plane warning |
 | `HIP_KNEE_RESIDUAL_WARN_DEG` | 8.0 | hip-phase knee drift → coupling warning |

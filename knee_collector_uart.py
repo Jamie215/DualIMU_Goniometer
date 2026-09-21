@@ -27,13 +27,24 @@ long as each board is rigidly fixed to its segment. It measures the sagittal
 component of the joint angle -- ideal for upright knee flexion (standing ROM,
 gait, sit-to-stand).
 
-Calibration is two-phase (both handled here, no reflashing needed):
-  1. STATIC ZERO  -- hold full extension still for ~CAL_SECONDS. We average the
-     gravity-in-board direction of each segment to get its zero axis d_i.
-  2. FUNCTIONAL SWEEP -- do a few slow reps that bend BOTH knee and hip
-     (sit-to-stands / marching) for ~SWEEP_SECONDS, so each segment tilts enough
-     to reveal its in-plane forward direction f_i. A segment that stays still just
-     contributes ~0 to the angle.
+Calibration is three-phase (all handled here, no reflashing needed). The two
+sweeps are SEPARATED on purpose: learning each segment's forward axis from a
+motion that isolates it keeps hip and knee calibration from contaminating each
+other (a combined sit-to-stand makes both tilt together, so neither forward axis
+is clean -- the main reason hip motion leaks into the knee reading).
+  1. STATIC ZERO -- hold the leg straight and STILL. We wait for a genuinely quiet
+     window (stillness-gated, not just timed) and average each segment's
+     gravity-in-board direction to get its zero axis d_i.
+  2. HIP SWEEP -- knee locked straight, swing the whole leg from the hip. Both
+     boards tilt together; we learn the THIGH forward axis f_thigh from this, and
+     (since the knee is locked) the knee reading should stay ~0 -- a built-in
+     check that surfaces the very out-of-plane hip motion that causes leakage.
+  3. KNEE SWEEP -- sit down, hold the thigh still, bend/straighten the knee. We
+     learn the SHANK forward axis f_shank from this. A segment that stays still
+     just contributes ~0 to the angle.
+Each forward axis is fit as the dominant principal direction of the in-plane
+gravity trajectory (robust to noise), which also yields a planarity quality score
+that flags an out-of-plane sweep instead of trusting a mis-aimed axis.
 
 What "0 deg" means (IMPORTANT):
   The angle is RELATIVE to the pose held during the static zero -- whatever
@@ -89,13 +100,38 @@ except ImportError:
 # stream, 10 samples is ~200 ms.
 MAX_FILL = 10
 
-# Calibration windows (seconds): hold full extension, then flexion reps.
-CAL_SECONDS = 2.0
-SWEEP_SECONDS = 6.0
+# --- Calibration timing / gating ------------------------------------------- #
+# The zero is STILLNESS-gated, not just timed: we require a quiet window this long
+# (a settling drift dwarfs sensor noise, so waiting for quiet beats averaging
+# longer). CAL_SECONDS is the length of the still window we must observe.
+CAL_SECONDS = 5.0
+# Max gravity-direction spread (deg) across the window that still counts as "still".
+ZERO_STILL_TOL_DEG = 1.0
+# Give up waiting for perfect quiet after this; accept the quietest window, warn.
+ZERO_MAX_WAIT = 15.0
+
+# The two functional sweeps (hip, then knee) are MOTION-gated: each advances as
+# soon as its segment has covered enough range (so the user sets the pace and is
+# never cut off mid-rep), bounded below by SWEEP_MIN_SECONDS (don't jump ahead on
+# a twitch) and above by SWEEP_SECONDS (advance anyway, warn if under-covered).
+SWEEP_SECONDS = 12.0
+SWEEP_MIN_SECONDS = 3.0
+HIP_MIN_COVERAGE_DEG = 25.0     # thigh tilt needed to learn f_thigh (hip swing)
+KNEE_MIN_COVERAGE_DEG = 60.0    # shank tilt needed to learn f_shank (knee flex)
 
 # A segment must tilt more than this during the sweep for its motion to define
 # the forward direction, so IMU noise around the zero pose doesn't set it.
 SWEEP_MIN_ANGLE_DEG = 5.0
+
+# Below this planarity score (1.0 = perfectly planar motion) the sweep wandered
+# out of the sagittal plane -- the exact source of hip-into-knee leakage -- so we
+# flag it rather than silently trusting a mis-aimed forward axis.
+PLANARITY_MIN = 0.90
+# With the knee locked during the hip swing, the knee angle should stay ~0; a
+# larger residual means out-of-plane hip motion the method can't fully cancel.
+HIP_KNEE_RESIDUAL_WARN_DEG = 8.0
+# During the knee sweep the thigh should stay put; warn if it drifts past this.
+KNEE_THIGH_STILL_TOL_DEG = 10.0
 
 # --------------------------------------------------------------------------- #
 # Small vector / quaternion helpers (w, x, y, z), stdlib-only.
@@ -197,29 +233,104 @@ def _perp(g, d):
     return (g[0] - gd * d[0], g[1] - gd * d[1], g[2] - gd * d[2])
 
 
-def estimate_forward(g_list, d, min_tilt_deg=SWEEP_MIN_ANGLE_DEG):
-    """Learn the segment's in-plane 'anterior' direction from the tilt it shows
-    during the calibration motion: the (perpendicular-to-d) component of gravity,
-    sign-aligned and summed. Returns a unit vector, or None if the segment barely
-    moved (then that segment contributes ~0 to the angle anyway)."""
-    ref = None
-    acc = [0.0, 0.0, 0.0]
-    n = 0
+def _basis_perp(d):
+    """Two orthonormal vectors spanning the plane perpendicular to unit vector d.
+    Seeds off d's smallest component for numerical stability."""
+    ax, ay, az = abs(d[0]), abs(d[1]), abs(d[2])
+    if ax <= ay and ax <= az:
+        seed = (1.0, 0.0, 0.0)
+    elif ay <= az:
+        seed = (0.0, 1.0, 0.0)
+    else:
+        seed = (0.0, 0.0, 1.0)
+    sd = _dot3(seed, d)
+    e1 = _normalize3((seed[0] - sd * d[0], seed[1] - sd * d[1], seed[2] - sd * d[2]))
+    e2 = _normalize3((d[1] * e1[2] - d[2] * e1[1],
+                      d[2] * e1[0] - d[0] * e1[2],
+                      d[0] * e1[1] - d[1] * e1[0]))
+    return e1, e2
+
+
+def plane_forward(g_list, d, min_tilt_deg=SWEEP_MIN_ANGLE_DEG):
+    """Learn the segment's in-plane 'anterior' direction f, robustly.
+
+    For planar flexion by angle t, g = cos(t) d + sin(t) f, so the part of gravity
+    perpendicular to d is sin(t) f -- every such sample lies on the LINE spanned by
+    f. So f is the dominant principal direction of the perpendicular components (a
+    2x2 eigenproblem in the plane perp to d), and the SECONDARY spread measures how
+    far the motion strayed out of plane. This replaces the old sign-aligned sum
+    (which anchored on one noisy sample) and yields a free quality score.
+
+    Returns (f, planarity, coverage_deg):
+      f            -- unit forward vector, or None if the segment barely moved
+      planarity    -- 1 - lambda2/lambda1 in [0,1]; 1.0 = perfectly planar motion
+      coverage_deg -- largest tilt away from d among the samples used
+    """
+    if d is None:
+        return None, 0.0, 0.0
+    e1, e2 = _basis_perp(d)
     thr = math.sin(math.radians(min_tilt_deg))
+    sxx = sxy = syy = 0.0
+    mx = my = 0.0
+    n = 0
+    coverage = 0.0
     for g in g_list:
         r = _perp(g, d)
         rn = _norm3(r)
         if rn < thr:
             continue
-        u = (r[0] / rn, r[1] / rn, r[2] / rn)
-        if ref is None:
-            ref = u
-        s = 1.0 if _dot3(u, ref) >= 0.0 else -1.0
-        acc[0] += s * r[0]; acc[1] += s * r[1]; acc[2] += s * r[2]
+        px = _dot3(r, e1); py = _dot3(r, e2)
+        sxx += px * px; sxy += px * py; syy += py * py
+        mx += px; my += py
         n += 1
+        cov = math.degrees(math.asin(max(-1.0, min(1.0, rn))))
+        if cov > coverage:
+            coverage = cov
     if n == 0:
-        return None
-    return _normalize3(tuple(acc))
+        return None, 0.0, 0.0
+    # eigenvalues of the symmetric 2x2 scatter [[sxx,sxy],[sxy,syy]]
+    tr = sxx + syy
+    root = math.sqrt(max(0.0, tr * tr / 4.0 - (sxx * syy - sxy * sxy)))
+    lam1 = tr / 2.0 + root
+    lam2 = tr / 2.0 - root
+    # dominant eigenvector (2D): (lam1 - syy, sxy), or the bigger diagonal axis
+    if abs(sxy) > 1e-12:
+        vx, vy = lam1 - syy, sxy
+    else:
+        vx, vy = (1.0, 0.0) if sxx >= syy else (0.0, 1.0)
+    vn = math.hypot(vx, vy)
+    if vn == 0.0:
+        return None, 0.0, coverage
+    vx /= vn; vy /= vn
+    # sign: align to the mean in-plane direction (preserves the old polarity, where
+    # 'forward' is the way the segment actually tilted from extension).
+    if vx * mx + vy * my < 0.0:
+        vx, vy = -vx, -vy
+    f = _normalize3((vx * e1[0] + vy * e2[0],
+                     vx * e1[1] + vy * e2[1],
+                     vx * e1[2] + vy * e2[2]))
+    planarity = 1.0 - (lam2 / lam1 if lam1 > 0.0 else 1.0)
+    return f, planarity, coverage
+
+
+def estimate_forward(g_list, d, min_tilt_deg=SWEEP_MIN_ANGLE_DEG):
+    """Backward-compatible wrapper: just the forward axis from plane_forward()."""
+    return plane_forward(g_list, d, min_tilt_deg)[0]
+
+
+def gravity_spread_deg(g_list):
+    """Largest angular deviation (deg) of the samples from their mean direction --
+    the stillness measure that gates the zero window."""
+    m = average_gravity(g_list)
+    if m is None:
+        return 0.0
+    worst = 0.0
+    for g in g_list:
+        c = max(-1.0, min(1.0, _dot3(g, m)))
+        a = math.degrees(math.acos(c))
+        if a > worst:
+            worst = a
+    return worst
 
 
 def sagittal_inclination(g, d, f):
@@ -398,8 +509,11 @@ def _self_test():
     gt0 = [gravity_in_board(_bq(psi, math.radians(a), B_t)) for a in range(0, 46, 3)]
     gs0 = [gravity_in_board(_bq(psi, math.radians(a), B_s)) for a in range(0, 46, 3)]
     d_t = average_gravity([gt0[0]]); d_s = average_gravity([gs0[0]])
-    f_t = estimate_forward(gt0, d_t); f_s = estimate_forward(gs0, d_s)
+    f_t, plt, _ = plane_forward(gt0, d_t); f_s, pls, _ = plane_forward(gs0, d_s)
     assert f_t is not None and f_s is not None
+    assert plt > 0.99 and pls > 0.99, (plt, pls)   # clean planar sweep -> planarity ~1
+    # estimate_forward wrapper returns just the axis
+    assert estimate_forward(gt0, d_t) == f_t
     for pth, psh in ((10, 40), (55, 15), (0, 0), (30, 70)):
         qt = _bq(psi, math.radians(pth), B_t)
         qs = _bq(psi, math.radians(psh), B_s)
@@ -423,6 +537,52 @@ def _self_test():
         knee = gravity_knee_angle(_bq(psi, 0.0, B_t), qs, d_t, f_t, d_s, f_s)
         assert abs(knee - (0 - a)) < 1e-6, (a, knee)
     print("  return-from-high-angle sweep OK")
+
+    # --- separated hip/knee calibration: learn each forward axis from an
+    #     ISOLATED motion (hip swing for the thigh, knee flex for the shank) and
+    #     still recover the true knee. A pure hip motion must read ~0 knee -- the
+    #     leak the redesign targets. ---
+    hip_t = [gravity_in_board(_bq(psi, math.radians(h), B_t)) for h in range(0, 31, 3)]
+    hip_s = [gravity_in_board(_bq(psi, math.radians(h), B_s)) for h in range(0, 31, 3)]
+    knee_s = [gravity_in_board(_bq(psi, math.radians(k), B_s)) for k in range(0, 71, 5)]
+    fh, plh, covh = plane_forward(hip_t, d_t)     # thigh forward from the hip swing
+    fk, plk, covk = plane_forward(knee_s, d_s)    # shank forward from the knee flex
+    assert fh is not None and fk is not None
+    assert plh > 0.99 and plk > 0.99, (plh, plk)
+    assert covh > 25.0 and covk > 60.0, (covh, covk)
+    for hh in (5, 15, 25):                         # pure hip motion -> ~0 knee
+        qt = _bq(psi, math.radians(hh), B_t); qs = _bq(psi, math.radians(hh), B_s)
+        assert abs(gravity_knee_angle(qt, qs, d_t, fh, d_s, fk)) < 1e-6, hh
+    for pth, psh in ((0, 40), (20, 60), (30, 30)):  # true knee still recovered
+        qt = _bq(psi, math.radians(pth), B_t); qs = _bq(psi, math.radians(psh), B_s)
+        assert abs(gravity_knee_angle(qt, qs, d_t, fh, d_s, fk) - (pth - psh)) < 1e-6
+    assert hip_lock_residual_deg(hip_t, hip_s, d_t, fh, d_s, fk) < 1e-4
+    print("  separated hip/knee calibration OK (pure hip -> ~0 knee)")
+
+    # --- planarity score: a clean sagittal sweep scores ~1; an out-of-plane one
+    #     (wobbling off the sagittal plane) scores lower, so it can be flagged. ---
+    e1s, e2s = _basis_perp(d_s)
+    def _perp_sample(t_deg, w_deg):
+        t = math.radians(t_deg); w = math.radians(w_deg)
+        ux = math.cos(w) * e1s[0] + math.sin(w) * e2s[0]
+        uy = math.cos(w) * e1s[1] + math.sin(w) * e2s[1]
+        uz = math.cos(w) * e1s[2] + math.sin(w) * e2s[2]
+        c = math.cos(t); s = math.sin(t)
+        return _normalize3((c * d_s[0] + s * ux, c * d_s[1] + s * uy, c * d_s[2] + s * uz))
+    planar = [_perp_sample(a, 0.0) for a in range(5, 61, 3)]
+    outp = [_perp_sample(a, 25.0 * math.sin(a)) for a in range(5, 61, 3)]
+    _, pl_planar, _ = plane_forward(planar, d_s)
+    _, pl_out, _ = plane_forward(outp, d_s)
+    assert pl_planar > 0.99, pl_planar
+    assert pl_out < 0.97, pl_out
+    print("  planarity quality score OK")
+
+    # --- stillness gate: a held-still window reads ~0 spread; a moving one large. ---
+    still = [gravity_in_board(_bq(psi, 0.0, B_t)) for _ in range(20)]
+    assert gravity_spread_deg(still) < 1e-6
+    moving = [gravity_in_board(_bq(psi, math.radians(a), B_t)) for a in range(0, 20, 2)]
+    assert gravity_spread_deg(moving) > 5.0
+    print("  stillness gate OK")
 
     # --- parsing: 18-field (accel) and 12-field (legacy) lines ---
     r18 = parse_line("D,1,1,0,0,0,0.1,0.0,0.98,2,1,0,0,0,-0.2,0.0,0.97,300")
@@ -516,6 +676,149 @@ def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
     print("Data OK.")
 
 
+def _write_row(writer, rec, angle, status, valid):
+    """One CSV row in the fixed schema, shared by every phase."""
+    tq = rec['thigh_q']
+    sq = rec['shank_q']
+    writer.writerow([
+        rec['t_thigh'],
+        f"{tq[0]:.4f}", f"{tq[1]:.4f}", f"{tq[2]:.4f}", f"{tq[3]:.4f}",
+        f"{sq[0]:.4f}" if valid else '',
+        f"{sq[1]:.4f}" if valid else '',
+        f"{sq[2]:.4f}" if valid else '',
+        f"{sq[3]:.4f}" if valid else '',
+        f"{angle:.2f}" if angle is not None else '',
+        status,
+        rec['rtt'],
+    ])
+
+
+def hip_lock_residual_deg(hip_gt, hip_gs, d_thigh, f_thigh, d_shank, f_shank):
+    """Largest |knee| over the knee-locked hip swing. With the knee locked the
+    joint is straight the whole time, so this should be ~0; a large value is the
+    out-of-plane hip motion the gravity method cannot fully cancel -- exactly the
+    leakage the user sees. Returns None if either forward axis is missing."""
+    if f_thigh is None or f_shank is None:
+        return None
+    worst = 0.0
+    for gt, gs in zip(hip_gt, hip_gs):
+        k = abs(sagittal_inclination(gt, d_thigh, f_thigh)
+                - sagittal_inclination(gs, d_shank, f_shank))
+        if k > worst:
+            worst = k
+    return worst
+
+
+def calibration_notes(pl_thigh, cov_thigh, f_thigh,
+                      pl_shank, cov_shank, f_shank,
+                      hip_residual, thigh_drift):
+    """Human-readable warnings about calibration quality, shared by CLI and GUI so
+    both say the same thing. Empty list == a clean calibration."""
+    notes = []
+    if f_shank is None:
+        notes.append("shank barely moved during the knee sweep -- redo with a fuller bend")
+    elif cov_shank < KNEE_MIN_COVERAGE_DEG:
+        notes.append(f"knee sweep only reached {cov_shank:.0f} deg "
+                     f"(< {KNEE_MIN_COVERAGE_DEG:.0f}); bend further next time")
+    if f_thigh is None:
+        notes.append("thigh didn't tilt during the hip sweep -- treating it as fixed "
+                     "(knee = shank tilt)")
+    elif cov_thigh < HIP_MIN_COVERAGE_DEG:
+        notes.append(f"hip sweep only reached {cov_thigh:.0f} deg "
+                     f"(< {HIP_MIN_COVERAGE_DEG:.0f}); swing further next time")
+    if f_thigh is not None and pl_thigh < PLANARITY_MIN:
+        notes.append(f"thigh sweep drifted out of plane (planarity {pl_thigh:.2f}); "
+                     f"swing straight in the sagittal plane")
+    if f_shank is not None and pl_shank < PLANARITY_MIN:
+        notes.append(f"shank sweep drifted out of plane (planarity {pl_shank:.2f})")
+    if hip_residual is not None and hip_residual > HIP_KNEE_RESIDUAL_WARN_DEG:
+        notes.append(f"knee drifted {hip_residual:.0f} deg during the locked hip swing "
+                     f"-- residual hip-to-knee coupling; keep the knee locked and swing "
+                     f"straighter")
+    if thigh_drift is not None and thigh_drift > KNEE_THIGH_STILL_TOL_DEG:
+        notes.append(f"thigh moved {thigh_drift:.0f} deg during the knee sweep -- "
+                     f"keep it still")
+    return notes
+
+
+def _zero_phase(ser, writer, still_seconds,
+                tol_deg=ZERO_STILL_TOL_DEG, max_wait=ZERO_MAX_WAIT):
+    """Phase 1: read until a genuinely STILL window of length still_seconds is seen
+    for both segments (or max_wait elapses), then average it into d_thigh, d_shank.
+    Waiting for quiet -- rather than just averaging longer -- is what stops a slow
+    postural drift from biasing the zero."""
+    win = []                       # trailing (t, g_thigh, g_shank) within the window
+    start = time.time()
+    spread_t = spread_s = 0.0
+    while True:
+        rec = parse_line(ser.readline().decode('ascii', 'ignore'))
+        if rec is None:
+            continue
+        now = time.time()
+        valid = is_valid(rec)
+        _write_row(writer, rec, None, 'zeroing', valid)
+        if valid:
+            win.append((now, gravity_from_quat(rec, 'thigh'),
+                        gravity_from_quat(rec, 'shank')))
+            win[:] = [w for w in win if now - w[0] <= still_seconds]
+            spread_t = gravity_spread_deg([w[1] for w in win])
+            spread_s = gravity_spread_deg([w[2] for w in win])
+            covered = (now - win[0][0]) >= still_seconds * 0.98
+            print(f"\r  holding still... spread thigh {spread_t:4.1f} / shank "
+                  f"{spread_s:4.1f} deg (need < {tol_deg:.1f})   ", end='')
+            if covered and spread_t <= tol_deg and spread_s <= tol_deg:
+                print(f"\n  Zero captured ({len(win)} still samples).")
+                return (average_gravity([w[1] for w in win]),
+                        average_gravity([w[2] for w in win]))
+        if now - start >= max_wait:
+            if win:
+                print(f"\n  WARNING: never fully settled; using best {len(win)} samples "
+                      f"(spread up to {max(spread_t, spread_s):.1f} deg).")
+                return (average_gravity([w[1] for w in win]),
+                        average_gravity([w[2] for w in win]))
+            print("\n  WARNING: no valid samples during zero; still waiting...")
+            start = now
+
+
+def _sweep_phase(ser, writer, learn_seg, d_thigh, d_shank,
+                 min_cov_deg, max_seconds, status, min_seconds=SWEEP_MIN_SECONDS):
+    """Phases 2/3: motion-gated sweep. Read while the user moves `learn_seg`;
+    advance once that segment has covered min_cov_deg (and min_seconds have passed)
+    or max_seconds elapses. Returns (f, planarity, coverage, gt_samples, gs_samples).
+    The stored per-sample gravities let the caller validate the hip lock and the
+    thigh-still assumption afterward."""
+    d_learn = d_thigh if learn_seg == 'thigh' else d_shank
+    gt = []; gs = []
+    start = time.time()
+    coverage = 0.0
+    while True:
+        rec = parse_line(ser.readline().decode('ascii', 'ignore'))
+        if rec is None:
+            continue
+        elapsed = time.time() - start
+        valid = is_valid(rec)
+        preview = None
+        if valid:
+            g_t = gravity_from_quat(rec, 'thigh')
+            g_s = gravity_from_quat(rec, 'shank')
+            gt.append(g_t); gs.append(g_s)
+            cov = _incl_from_zero(g_t if learn_seg == 'thigh' else g_s, d_learn)
+            coverage = max(coverage, cov)
+            preview = cov
+        _write_row(writer, rec, preview, status, valid)
+        pct = min(100.0, 100.0 * coverage / min_cov_deg)
+        print(f"\r  {status} sweep: {coverage:4.0f}/{min_cov_deg:.0f} deg "
+              f"[{pct:3.0f}%]  {elapsed:4.1f}s   ", end='')
+        if elapsed >= min_seconds and coverage >= min_cov_deg:
+            break
+        if elapsed >= max_seconds:
+            break
+    samples = gt if learn_seg == 'thigh' else gs
+    f, planarity, cov = plane_forward(samples, d_learn)
+    print()
+    return f, planarity, cov, gt, gs
+
+
 def run(port, out_path, baud=115200,
         cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS, raw=False):
     if serial is None:
@@ -544,97 +847,61 @@ def run(port, out_path, baud=115200,
                      'knee_angle_deg', 'status', 'rtt_us'])
 
     handler = DropoutHandler()
-    zero_done = False
-    cal_done = False
-    # per-board zero direction (d) and learned forward axis (f)
-    d_thigh = d_shank = f_thigh = f_shank = None
-    gz_thigh = []; gz_shank = []      # gravity-in-board during zeroing
-    gs_thigh = []; gs_shank = []      # gravity-in-board during sweep
 
-    t_zero_end = cal_seconds
-    t_sweep_end = cal_seconds + sweep_seconds
-
-    # Don't start the calibration clock until real data is flowing, otherwise the
-    # zero window can elapse before the user is ready (or hang invisibly on a bad
-    # link). wait_for_stream diagnoses no-data / wrong-firmware / dead-peripheral.
+    # Don't start calibrating until real data is flowing, otherwise a phase can
+    # advance before the user is ready (or hang invisibly on a bad link).
+    # wait_for_stream diagnoses no-data / wrong-firmware / dead-peripheral.
     print(f"Waiting for data on {port} ... (gravity-referenced angle, gyro-fused)")
     wait_for_stream(ser, port)
-    start = time.time()
-    print(f"Stand with the leg STRAIGHT and STILL ~{cal_seconds:.0f} s (zeroing)...")
 
     try:
+        # Phase 1: stillness-gated zero.
+        print(f"\nZERO -- stand with the leg STRAIGHT and hold STILL "
+              f"(need {cal_seconds:.0f}s of quiet)...")
+        d_thigh, d_shank = _zero_phase(ser, writer, cal_seconds)
+
+        # Phase 2: hip sweep -> learn the thigh forward axis. Knee stays locked, so
+        # the joint is straight and we can validate the reading afterward.
+        print("\nHIP -- keep the knee LOCKED straight, swing the whole leg from the "
+              "hip (forward and back)...")
+        f_thigh, pl_thigh, cov_thigh, hip_gt, hip_gs = _sweep_phase(
+            ser, writer, 'thigh', d_thigh, d_shank, HIP_MIN_COVERAGE_DEG,
+            sweep_seconds, status='hip')
+
+        # Phase 3: knee sweep -> learn the shank forward axis. Thigh held still.
+        print("\nKNEE -- sit down, keep the THIGH still, bend and straighten the "
+              "knee...")
+        f_shank, pl_shank, cov_shank, knee_gt, knee_gs = _sweep_phase(
+            ser, writer, 'shank', d_thigh, d_shank, KNEE_MIN_COVERAGE_DEG,
+            sweep_seconds, status='knee')
+
+        # Validate + report quality.
+        hip_residual = hip_lock_residual_deg(hip_gt, hip_gs, d_thigh, f_thigh,
+                                             d_shank, f_shank)
+        thigh_drift = gravity_spread_deg(knee_gt) if knee_gt else None
+        notes = calibration_notes(pl_thigh, cov_thigh, f_thigh,
+                                  pl_shank, cov_shank, f_shank,
+                                  hip_residual, thigh_drift)
+        for note in notes:
+            print(f"  ! {note}")
+        if hip_residual is not None:
+            print(f"  hip-lock knee residual: {hip_residual:.1f} deg "
+                  f"(lower is better; < {HIP_KNEE_RESIDUAL_WARN_DEG:.0f} is good)")
+        print("\nCalibrated (gravity-referenced, drift-free). Reporting knee angle. "
+              "Ctrl-C to stop.")
+
+        # Phase 4: run. Drift-free sagittal knee = thigh incl - shank incl.
         while True:
-            line = ser.readline().decode('ascii', 'ignore')
-            rec = parse_line(line)
+            rec = parse_line(ser.readline().decode('ascii', 'ignore'))
             if rec is None:
                 continue
-
-            elapsed = time.time() - start
             valid = is_valid(rec)
-
             angle = None
-            if not zero_done:
-                # Phase 1: straight-and-still hold. Capture each segment's zero
-                # gravity direction d_i.
-                if valid:
-                    gz_thigh.append(gravity_from_quat(rec, 'thigh'))
-                    gz_shank.append(gravity_from_quat(rec, 'shank'))
-                status = 'zeroing'
-                if elapsed >= t_zero_end:
-                    d_thigh = average_gravity(gz_thigh)
-                    d_shank = average_gravity(gz_shank)
-                    zero_done = True
-                    n = len(gz_shank)
-                    if n == 0:
-                        print("\nWARNING: no valid samples during hold.")
-                    print(f"\nZero captured ({n} samples). Now do a few slow reps that "
-                          f"bend BOTH the knee and hip (e.g. sit-to-stands / marching) "
-                          f"for ~{sweep_seconds:.0f} s...")
-
-            elif not cal_done:
-                # Phase 2: calibration motion. Learn each segment's forward
-                # direction f_i. Preview how far the shank has tilted so the user
-                # sees the sweep registering.
-                status = 'sweep'
-                if valid:
-                    gs_thigh.append(gravity_from_quat(rec, 'thigh'))
-                    gs_shank.append(gravity_from_quat(rec, 'shank'))
-                    angle = _incl_from_zero(gravity_from_quat(rec, 'shank'), d_shank)
-                if elapsed >= t_sweep_end:
-                    f_thigh = estimate_forward(gs_thigh, d_thigh)
-                    f_shank = estimate_forward(gs_shank, d_shank)
-                    cal_done = True
-                    if f_shank is None:
-                        print("\nWARNING: the shank barely moved during calibration "
-                              "-- redo with a fuller range. Reporting anyway.")
-                    elif f_thigh is None:
-                        print("\nNote: thigh didn't tilt during calibration; treating "
-                              "it as fixed (knee = shank inclination). Ctrl-C to stop.")
-                    else:
-                        print("\nCalibrated (gravity-referenced, drift-free). Reporting "
-                              "knee angle. Ctrl-C to stop.")
-
-            else:
-                # Phase 3: run. Drift-free sagittal knee = thigh incl - shank incl.
-                if valid:
-                    angle = gravity_knee_angle(rec['thigh_q'], rec['shank_q'],
-                                               d_thigh, f_thigh, d_shank, f_shank)
-                angle, status = handler.process(valid, angle)
-
-            tq = rec['thigh_q']
-            sq = rec['shank_q']
-            writer.writerow([
-                rec['t_thigh'],
-                f"{tq[0]:.4f}", f"{tq[1]:.4f}", f"{tq[2]:.4f}", f"{tq[3]:.4f}",
-                f"{sq[0]:.4f}" if valid else '',
-                f"{sq[1]:.4f}" if valid else '',
-                f"{sq[2]:.4f}" if valid else '',
-                f"{sq[3]:.4f}" if valid else '',
-                f"{angle:.2f}" if angle is not None else '',
-                status,
-                rec['rtt'],
-            ])
-
+            if valid:
+                angle = gravity_knee_angle(rec['thigh_q'], rec['shank_q'],
+                                           d_thigh, f_thigh, d_shank, f_shank)
+            angle, status = handler.process(valid, angle)
+            _write_row(writer, rec, angle, status, valid)
             disp = f"{angle:6.1f}" if angle is not None else "  --  "
             print(f"\rknee: {disp} deg  [{status:7s}]  rtt:{rec['rtt']:5d}us   ", end='')
     except KeyboardInterrupt:
@@ -724,9 +991,11 @@ if __name__ == '__main__':
     ap.add_argument('--port')
     ap.add_argument('--out', default='knee_log.csv')
     ap.add_argument('--cal-seconds', type=float, default=CAL_SECONDS,
-                    help='full-extension hold time for zeroing')
+                    help='length of the STILL window required to capture the zero '
+                         '(stillness-gated, not a fixed countdown)')
     ap.add_argument('--sweep-seconds', type=float, default=SWEEP_SECONDS,
-                    help='flexion-sweep time for learning each segment forward axis')
+                    help='per-sweep timeout; each of the hip and knee sweeps is '
+                         'motion-gated and normally advances earlier, on coverage')
     ap.add_argument('--raw', action='store_true',
                     help='dump raw serial lines (with field count) and exit; '
                          'use this to check the central output format')

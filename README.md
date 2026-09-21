@@ -50,10 +50,25 @@ the boards in a precise, repeatable orientation.
    ```
    python knee_collector_uart.py --port /dev/ttyACM0
    ```
-   - Hold the leg **straight and still** (~2 s) to zero.
-   - Do a few slow reps that bend **both knee and hip** (sit-to-stands /
-     marching) so each board tilts enough to learn its "forward" direction.
-   - The signed knee angle is printed live and logged to `knee_log.csv`.
+   Calibration is three phases, each paced to you (not a stopwatch):
+   1. **ZERO** — stand with the leg **straight** and hold **still**. It waits for a
+      genuinely quiet window (~5 s) before capturing the zero, so a little sway
+      can't bias it.
+   2. **HIP** — keep the **knee locked straight** and swing the whole leg from the
+      **hip**, forward and back. This learns the thigh's forward axis on its own,
+      and (knee locked → knee should read ~0) doubles as a check on hip-into-knee
+      leakage.
+   3. **KNEE** — **sit down, hold the thigh still**, and bend/straighten the
+      **knee**. This learns the shank's forward axis on its own.
+
+   Each sweep advances as soon as the segment has covered enough range, and any
+   poor calibration (out-of-plane swing, too little range, thigh not held still)
+   is flagged. The signed knee angle is then printed live and logged to
+   `knee_log.csv`.
+
+   Separating the hip and knee sweeps is deliberate: a single combined
+   sit-to-stand makes both segments move together, so neither forward axis is
+   clean — the main reason hip motion leaks into the knee reading.
 
 `--selftest` (no hardware) runs the full math test suite.
 
@@ -79,9 +94,12 @@ What it adds over the CLI:
 - **Consistent 50 Hz** — the fixed 50 Hz device stream is resampled onto a
   fixed 20 ms grid, so both the CSV and the plots are a clean 50 Hz record
   regardless of source jitter.
-- **Obvious calibration** — a colour-coded banner drives the phases with a live
-  countdown: amber **ZEROING** (hold straight & still) → amber **SWEEP** (bend
-  knee + hip, with a live shank-tilt readout) → green **RUNNING**.
+- **Obvious calibration** — a colour-coded banner drives the phases: amber
+  **ZERO** (hold straight & still, with a live "how quiet" readout) → amber
+  **HIP** (knee locked, swing from the hip) → amber **KNEE** (thigh still, bend
+  the knee), each showing live progress toward its target → green **RUNNING**.
+  The zero is gated on stillness and each sweep on range covered, so it paces to
+  the user and flags a poor calibration instead of trusting it.
 - **Plots** — knee angle (primary), the two segment inclinations it is built
   from, and the link RTT. While collecting they show a rolling window; when you
   **Stop collecting** they switch to the **entire session** (not just the last
@@ -140,28 +158,47 @@ part of `q_i`, so it is **drift-free** (the accelerometer fixes tilt) and
 **yaw-invariant** (rotating `q_i` about vertical leaves `g_i` unchanged). Code:
 `gravity_in_board()`.
 
-**2. Zero reference `d_i` (static-hold calibration).** With the leg held straight
-and still, average `g_i` over the hold window. `d_i` is the segment's long axis
-as seen in the board frame — the direction gravity points at 0°:
+**2. Zero reference `d_i` (stillness-gated static hold).** With the leg held
+straight and still, average `g_i` over the hold window. `d_i` is the segment's
+long axis as seen in the board frame — the direction gravity points at 0°:
 
 ```
 d_i = normalize( Σ g_i(t)  over the still hold )         # code: average_gravity()
 ```
 
-**3. Forward direction `f_i` (functional-sweep calibration).** During the slow
-reps, the part of `g_i` **perpendicular to `d_i`** is the direction the segment
-tilts toward as it flexes. Remove the `d_i` component, sign-align the samples (the
-limb sweeps consistently one way from extension), and sum:
+The zero is captured only from a **genuinely quiet** window — the code waits until
+the spread of `g_i` over the trailing `CAL_SECONDS` stays under `ZERO_STILL_TOL_DEG`
+for both segments (`gravity_spread_deg()`), falling back after `ZERO_MAX_WAIT`.
+Averaging longer doesn't help once a slow postural drift dominates sensor noise;
+waiting for stillness does.
+
+**3. Forward direction `f_i` (per-segment functional sweep).** As the segment
+flexes by angle `t`, `g_i = cos(t) d_i + sin(t) f_i`, so the part of `g_i`
+**perpendicular to `d_i`** is `sin(t) f_i` — every such sample lies on the **line
+spanned by `f_i`**. So `f_i` is the dominant principal direction of the
+perpendicular components (a 2×2 eigenproblem in the plane perp to `d_i`), and the
+secondary spread measures how far the motion strayed out of plane:
 
 ```
 g⊥ = g_i − (g_i · d_i) d_i                                # in-plane component
-f_i = normalize( Σ sign(g⊥ · ref) · g⊥ )                  # code: estimate_forward()
+f_i        = dominant eigenvector of Σ g⊥ g⊥ᵀ            # code: plane_forward()
+planarity  = 1 − λ2/λ1     (1.0 = perfectly planar)
 ```
 
-Samples that tilt less than `SWEEP_MIN_ANGLE_DEG` are ignored so IMU noise around
-the zero pose can't define the direction. `d_i` and `f_i` are orthonormal by
-construction and together span that segment's **sagittal plane** in its own frame.
-If a segment barely moved, `f_i` is undefined and that segment contributes 0.
+This replaces the old sign-aligned sum (which anchored on one noisy sample) with a
+principled fit and a free **quality score**: a sweep with `planarity < PLANARITY_MIN`
+is flagged rather than trusted. Samples tilting less than `SWEEP_MIN_ANGLE_DEG` are
+ignored so noise around the zero can't define the axis. `d_i` and `f_i` are
+orthonormal and span that segment's **sagittal plane** in its own frame; if a
+segment barely moved, `f_i` is undefined and it contributes 0.
+
+The two forwards are learned from **separate** motions — `f_thigh` from a
+knee-locked hip swing, `f_shank` from a thigh-fixed knee flex — so the two
+segments never move together and contaminate each other's axis. Because the knee
+is locked during the hip swing, its angle should stay ~0 throughout; the code
+measures the largest residual (`hip_lock_residual_deg()`) and warns past
+`HIP_KNEE_RESIDUAL_WARN_DEG`, surfacing exactly the out-of-plane hip motion that
+leaks into the knee.
 
 **4. Signed segment inclination.** The tilt of the segment is the angle of `g_i`
 within the `(d_i, f_i)` plane — the four-quadrant angle from the zero axis `d_i`
@@ -198,8 +235,10 @@ frame, the result is immune to:
 - **6-DOF yaw drift** (gravity-in-board is invariant to heading about vertical).
 
 Validated in `--selftest` against random mounts, a turning shared heading,
-independent per-board yaw drift (exact recovery), and a full flex-to-130°-and-back
-sweep (the signed angle retraces identically — no stuck zeros on return).
+independent per-board yaw drift (exact recovery), a full flex-to-130°-and-back
+sweep (the signed angle retraces identically — no stuck zeros on return), and the
+**separated hip/knee calibration** (learning each forward axis from an isolated
+motion still recovers the true knee, and a pure hip motion reads ~0).
 
 **Trade-off:** gravity gives only **2 of the 3 rotational DOF** — it is blind to
 rotation about the vertical (gravity) axis. So this method measures the
@@ -210,6 +249,15 @@ limit, not a mounting one: a fixed mount tilt cancels for planar motion (step 5)
 but tilt combined with out-of-sagittal-plane motion steers part of the true joint
 rotation into the unobservable yaw direction, where gravity cannot see it — the
 one case a gravity-only method fundamentally cannot recover.
+
+This is why **hip motion can still leak into the knee** even after calibration: a
+real hip movement carries some abduction and thigh axial rotation, and axial
+rotation of the thigh is exactly that unobservable DOF. The separated calibration
+and the planarity/hip-lock checks **minimize and surface** this leakage (learn
+each forward axis from a clean, isolated, in-plane motion; warn when a sweep or the
+locked hip swing goes out of plane), but they cannot remove it entirely —
+eliminating it would require magnetometer-aided heading or a hinge-axis
+constraint, a larger change than this proof of concept.
 
 ### What "0°" means (relative, not absolute)
 
@@ -263,14 +311,16 @@ python knee_collector_uart.py --port PORT [options]
 
   --monitor                 live bring-up check (gyro-fused vs raw-accel tilts)
   --raw                     dump raw serial lines with field counts, then exit
-  --cal-seconds N           straight-and-still zero hold (default 2)
-  --sweep-seconds N         calibration-motion window (default 6)
+  --cal-seconds N           length of the STILL window required to zero
+                            (stillness-gated, not a countdown; default 5)
+  --sweep-seconds N         per-sweep timeout; each of the hip and knee sweeps is
+                            motion-gated and normally advances earlier (default 12)
   --out FILE                CSV path (default knee_log.csv)
   --selftest                run the math self-tests (no hardware)
 ```
 
 CSV columns: `t_thigh_us, thigh_qw..qz, shank_qw..qz, knee_angle_deg, status,
-rtt_us` (status ∈ `zeroing / sweep / valid / filled / missing`).
+rtt_us` (status ∈ `zeroing / hip / knee / valid / filled / missing`).
 
 ---
 

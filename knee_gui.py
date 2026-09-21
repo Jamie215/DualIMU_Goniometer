@@ -3,7 +3,7 @@
 KNEE GONIOMETER -- live collection + visualization GUI  [Tkinter + Matplotlib]
 
 A proof-of-concept front end around knee_collector_uart.py. It finds the central
-board's serial port, runs the same two-phase calibration and gravity-referenced
+board's serial port, runs the same three-phase calibration and gravity-referenced
 angle math as the CLI, and adds what a testing session wants:
 
   * PORT SCAN         -- probe each serial port for valid 'D' lines and pick the
@@ -14,7 +14,9 @@ angle math as the CLI, and adds what a testing session wants:
                          clean 50 Hz record regardless of source jitter or transient
                          link stalls.
   * OBVIOUS CALIBRATION -- a big colour-coded banner drives the phases
-                         (ZEROING -> SWEEP -> RUNNING) with a live countdown.
+                         (ZERO -> HIP -> KNEE -> RUNNING). The zero is gated on
+                         stillness and each sweep on range covered, not a timer,
+                         so it paces to the user and flags a poor calibration.
   * VISUALIZATION     -- knee angle (primary) plus the two segment inclinations
                          it is built from, and the link RTT.
   * DROPOUT MODE (switchable live):
@@ -51,10 +53,13 @@ except ImportError:
     list_ports = None
 
 from knee_collector_uart import (
-    parse_line, is_valid, gravity_in_board, average_gravity, estimate_forward,
+    parse_line, is_valid, gravity_in_board, average_gravity, plane_forward,
+    gravity_spread_deg, hip_lock_residual_deg, calibration_notes,
     sagittal_inclination, gravity_knee_angle, _incl_from_zero,
     q_from_axis_angle, q_mul, diagnose_stream,
-    CAL_SECONDS, SWEEP_SECONDS, MAX_FILL,
+    CAL_SECONDS, SWEEP_SECONDS, SWEEP_MIN_SECONDS,
+    ZERO_STILL_TOL_DEG, ZERO_MAX_WAIT,
+    HIP_MIN_COVERAGE_DEG, KNEE_MIN_COVERAGE_DEG, MAX_FILL,
 )
 
 # --------------------------------------------------------------------------- #
@@ -126,14 +131,27 @@ class FakeSerial:
 
     def _line(self):
         t = time.monotonic() - self._t0
-        thigh_pitch = 10.0 + 10.0 * math.sin(2 * math.pi * t / 6.0 + 0.5)
-        shank_pitch = 45.0 + 45.0 * math.sin(2 * math.pi * t / 6.0)
+        # Scripted to match the four-phase calibration when you press Calibrate
+        # right after launch: STILL (hold the zero) -> HIP swing (knee locked, both
+        # segments move together) -> KNEE flex (thigh fixed) -> free knee motion.
+        if t < 6.0:                              # still: straight leg holds the zero
+            thigh_pitch = shank_pitch = 0.0
+        elif t < 12.0:                           # hip swing: knee locked -> move together
+            swing = 35.0 * math.sin(2 * math.pi * (t - 6.0) / 3.0)
+            thigh_pitch = shank_pitch = swing
+        elif t < 18.0:                           # knee flex: thigh fixed, shank moves
+            thigh_pitch = 0.0
+            shank_pitch = 75.0 * (1.0 - math.cos(2 * math.pi * (t - 12.0) / 3.0)) / 2.0
+        else:                                    # free running motion for the plots
+            thigh_pitch = 10.0 + 10.0 * math.sin(2 * math.pi * (t - 18.0) / 6.0 + 0.5)
+            shank_pitch = 45.0 + 45.0 * math.sin(2 * math.pi * (t - 18.0) / 6.0)
         qt = self._pitch_quat(thigh_pitch, self._MOUNT_T)
         qs = self._pitch_quat(shank_pitch, self._MOUNT_S)
         gt = gravity_in_board(qt)
         gs = gravity_in_board(qs)
         t_us = int(t * 1e6)
-        dropout = (t % 8.0) > 7.6          # periodic link glitch (~0.4 s / 8 s)
+        # Only glitch the link once we're running, so calibration stays clean.
+        dropout = t >= 18.0 and (t % 8.0) > 7.6   # periodic link glitch (~0.4 s / 8 s)
         rtt = 300 + int(40 * random.random())
         if dropout:
             sq = (0.0, 0.0, 0.0, 0.0); sa = (0.0, 0.0, 0.0); s_t = 0
@@ -224,21 +242,24 @@ class Collector(threading.Thread):
         self.sweep_seconds = sweep_seconds
 
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._stop_evt = threading.Event()
         self._req_cal = threading.Event()
         self._req_stop_collecting = threading.Event()
 
-        # calibration products
+        # calibration products (per-board zero axis d, forward axis f, and the
+        # forward fit's planarity / coverage quality scores)
         self._d_thigh = self._d_shank = None
         self._f_thigh = self._f_shank = None
+        self._pl_thigh = self._pl_shank = 0.0
+        self._cov_thigh = self._cov_shank = 0.0
 
         self._state = {
-            'phase': 'connecting',     # connecting|waiting|idle|zeroing|sweep|running
+            'phase': 'connecting',     # connecting|waiting|idle|zeroing|hip|knee|running
             'link_error': False,
             'link_msg': '',
-            'phase_end': None,         # monotonic deadline for the countdown
+            'phase_end': None,         # monotonic deadline (zero max-wait / sweep timeout)
             'cal_note': '',
-            'sweep_preview': None,     # live shank tilt shown during the sweep
+            'sweep_preview': None,     # live progress: hold spread (zero) or coverage (sweeps)
             'valid': False,
             'angle': None, 'incl_t': None, 'incl_s': None,
             'thigh_q': None, 'shank_q': None, 't_us': 0, 'rtt': 0,
@@ -254,7 +275,7 @@ class Collector(threading.Thread):
         self._req_stop_collecting.set()
 
     def stop(self):
-        self._stop.set()
+        self._stop_evt.set()
 
     def snapshot(self):
         with self._lock:
@@ -288,12 +309,18 @@ class Collector(threading.Thread):
         last_raw = ''
         got_valid = 0
 
-        gz_t = []; gz_s = []      # gravity-in-board during zeroing
-        gs_t = []; gs_s = []      # gravity-in-board during sweep
+        # Calibration buffers. The zero is stillness-gated (a trailing window of
+        # (t, g_thigh, g_shank)); the two sweeps are motion-gated and store their
+        # gravities so the hip lock and thigh-still checks can run afterward.
+        zero_win = []
+        hip_gt = []; hip_gs = []
+        knee_gt = []; knee_gs = []
+        cal_start = 0.0           # monotonic start of the current sweep phase
+        coverage = 0.0            # max tilt (deg) the learned segment has reached
 
         self._set(phase='waiting', link_msg=f"Waiting for data on {self.port} ...")
 
-        while not self._stop.is_set():
+        while not self._stop_evt.is_set():
             try:
                 raw = ser.readline().decode('ascii', 'ignore').strip()
             except Exception as exc:
@@ -324,8 +351,9 @@ class Collector(threading.Thread):
             # the next collection starts a fresh, recalibrated session.
             if self._req_stop_collecting.is_set():
                 self._req_stop_collecting.clear()
-                if phase in ('zeroing', 'sweep', 'running'):
-                    gz_t.clear(); gz_s.clear(); gs_t.clear(); gs_s.clear()
+                if phase in ('zeroing', 'hip', 'knee', 'running'):
+                    zero_win.clear(); hip_gt.clear(); hip_gs.clear()
+                    knee_gt.clear(); knee_gs.clear(); coverage = 0.0
                     self._d_thigh = self._d_shank = None
                     self._f_thigh = self._f_shank = None
                     phase = 'idle'
@@ -333,13 +361,14 @@ class Collector(threading.Thread):
                               phase_end=None, angle=None, incl_t=None, incl_s=None)
 
             # calibration (re)starts a session from idle. Each press is a reset:
-            # a fresh zero + sweep, and (in the sampler) a new CSV and cleared plot.
+            # a fresh zero + two sweeps, and (in the sampler) a new CSV / cleared plot.
             if self._req_cal.is_set() and phase == 'idle':
                 self._req_cal.clear()
-                gz_t.clear(); gz_s.clear(); gs_t.clear(); gs_s.clear()
+                zero_win.clear(); hip_gt.clear(); hip_gs.clear()
+                knee_gt.clear(); knee_gs.clear(); coverage = 0.0
                 phase = 'zeroing'
                 self._set(phase='zeroing', cal_note='', sweep_preview=None,
-                          phase_end=now + self.cal_seconds)
+                          phase_end=now + ZERO_MAX_WAIT)   # max wait; gated on stillness
 
             gt = gs = None
             if valid:
@@ -350,32 +379,70 @@ class Collector(threading.Thread):
             sweep_preview = None
 
             if phase == 'zeroing':
+                # Stillness-gated: only capture the zero from a genuinely quiet
+                # window, so a slow postural drift can't bias it.
                 if valid:
-                    gz_t.append(gt); gz_s.append(gs)
-                if now >= self._state['phase_end']:
-                    self._d_thigh = average_gravity(gz_t)
-                    self._d_shank = average_gravity(gz_s)
-                    phase = 'sweep'
-                    note = '' if gz_s else 'no valid samples during hold'
-                    self._set(phase='sweep', cal_note=note,
+                    zero_win.append((now, gt, gs))
+                    zero_win[:] = [w for w in zero_win if now - w[0] <= self.cal_seconds]
+                    spread_t = gravity_spread_deg([w[1] for w in zero_win])
+                    spread_s = gravity_spread_deg([w[2] for w in zero_win])
+                    sweep_preview = max(spread_t, spread_s)   # worst spread = progress
+                    covered = (now - zero_win[0][0]) >= self.cal_seconds * 0.98
+                    settled = (spread_t <= ZERO_STILL_TOL_DEG
+                               and spread_s <= ZERO_STILL_TOL_DEG)
+                    timed_out = now >= self._state['phase_end']
+                    if (covered and settled) or timed_out:
+                        self._d_thigh = average_gravity([w[1] for w in zero_win])
+                        self._d_shank = average_gravity([w[2] for w in zero_win])
+                        note = '' if not timed_out else 'zero never fully settled'
+                        phase = 'hip'; cal_start = now; coverage = 0.0
+                        self._set(phase='hip', cal_note=note, sweep_preview=None,
+                                  phase_end=now + self.sweep_seconds)
+                elif now >= self._state['phase_end']:
+                    self._set(phase_end=now + ZERO_MAX_WAIT)   # no data yet; keep waiting
+
+            elif phase == 'hip':
+                # Learn the thigh forward axis from a knee-locked hip swing.
+                if valid:
+                    hip_gt.append(gt); hip_gs.append(gs)
+                    if self._d_thigh is not None:
+                        coverage = max(coverage, _incl_from_zero(gt, self._d_thigh))
+                    sweep_preview = coverage
+                elapsed = now - cal_start
+                if ((elapsed >= SWEEP_MIN_SECONDS and coverage >= HIP_MIN_COVERAGE_DEG)
+                        or now >= self._state['phase_end']):
+                    (self._f_thigh, self._pl_thigh,
+                     self._cov_thigh) = plane_forward(hip_gt, self._d_thigh)
+                    phase = 'knee'; cal_start = now; coverage = 0.0
+                    self._set(phase='knee', sweep_preview=None,
                               phase_end=now + self.sweep_seconds)
 
-            elif phase == 'sweep':
+            elif phase == 'knee':
+                # Learn the shank forward axis from a thigh-fixed knee flex, then
+                # validate (hip lock, thigh still) and summarize quality.
                 if valid:
-                    gs_t.append(gt); gs_s.append(gs)
+                    knee_gt.append(gt); knee_gs.append(gs)
                     if self._d_shank is not None:
-                        sweep_preview = _incl_from_zero(gs, self._d_shank)
-                if now >= self._state['phase_end']:
-                    self._f_thigh = estimate_forward(gs_t, self._d_thigh)
-                    self._f_shank = estimate_forward(gs_s, self._d_shank)
-                    if self._f_shank is None:
-                        note = "shank barely moved during calibration -- redo with a fuller range"
-                    elif self._f_thigh is None:
-                        note = "thigh didn't tilt; treating it as fixed (knee = shank tilt)"
-                    else:
-                        note = "calibrated (gravity-referenced, drift-free)"
+                        coverage = max(coverage, _incl_from_zero(gs, self._d_shank))
+                    sweep_preview = coverage
+                elapsed = now - cal_start
+                if ((elapsed >= SWEEP_MIN_SECONDS and coverage >= KNEE_MIN_COVERAGE_DEG)
+                        or now >= self._state['phase_end']):
+                    (self._f_shank, self._pl_shank,
+                     self._cov_shank) = plane_forward(knee_gs, self._d_shank)
+                    hip_residual = hip_lock_residual_deg(
+                        hip_gt, hip_gs, self._d_thigh, self._f_thigh,
+                        self._d_shank, self._f_shank)
+                    thigh_drift = gravity_spread_deg(knee_gt) if knee_gt else None
+                    notes = calibration_notes(
+                        self._pl_thigh, self._cov_thigh, self._f_thigh,
+                        self._pl_shank, self._cov_shank, self._f_shank,
+                        hip_residual, thigh_drift)
+                    note = ("; ".join(notes) if notes
+                            else "calibrated (gravity-referenced, drift-free)")
                     phase = 'running'
-                    self._set(phase='running', cal_note=note, phase_end=None)
+                    self._set(phase='running', cal_note=note, sweep_preview=None,
+                              phase_end=None)
 
             elif phase == 'running':
                 if valid:
@@ -422,7 +489,7 @@ class Collector(threading.Thread):
 # fill/gap gate, appends to the plot ring buffer, and writes the CSV.
 #
 # Collection is SESSION-based and driven by the collector's phase: a session runs
-# for as long as the phase is zeroing/sweep/running. On the transition into a
+# for as long as the phase is zeroing/hip/knee/running. On the transition into a
 # session it opens a fresh timestamped CSV and clears the plot; on the transition
 # out (a Stop, which resets to idle) it closes the file. Outside a session it
 # does nothing -- so when stopped the display FREEZES on the last data instead of
@@ -434,13 +501,13 @@ class Sampler(threading.Thread):
               'shank_qw', 'shank_qx', 'shank_qy', 'shank_qz',
               'knee_angle_deg', 'incl_thigh_deg', 'incl_shank_deg',
               'status', 'phase', 'rtt_us', 'fill_mode']
-    ACTIVE = ('zeroing', 'sweep', 'running')
+    ACTIVE = ('zeroing', 'hip', 'knee', 'running')
 
     def __init__(self, collector, path_prefix='knee'):
         super().__init__(daemon=True)
         self.collector = collector
         self.path_prefix = path_prefix
-        self._stop = threading.Event()
+        self._stop_evt = threading.Event()
         self._lock = threading.Lock()
         self.fill_mode = True
         self.gate = SampleGate(fill_mode=True)
@@ -451,7 +518,7 @@ class Sampler(threading.Thread):
         self.current_path = None          # CSV of the session in progress (or last)
 
     def stop(self):
-        self._stop.set()
+        self._stop_evt.set()
 
     def set_fill_mode(self, fill):
         with self._lock:
@@ -500,7 +567,7 @@ class Sampler(threading.Thread):
         session_start = 0.0
         next_t = time.monotonic()
         try:
-            while not self._stop.is_set():
+            while not self._stop_evt.is_set():
                 now = time.monotonic()
                 s = self.collector.snapshot()
                 phase = s['phase']
@@ -523,7 +590,7 @@ class Sampler(threading.Thread):
                                 fresh, s['angle'] if fresh else None)
                             incl_t = s['incl_t'] if (fresh and s['incl_t'] is not None) else nan
                             incl_s = s['incl_s'] if (fresh and s['incl_s'] is not None) else nan
-                        else:                          # zeroing / sweep: no angle yet
+                        else:                          # zeroing / hip / knee: no angle yet
                             out_angle, status = None, phase
                             incl_t = incl_s = nan
                         plot_angle = out_angle if out_angle is not None else nan
@@ -571,8 +638,9 @@ class App:
         'connecting': ('#607d8b', 'Connecting ...'),
         'waiting':    ('#607d8b', 'Waiting for data'),
         'idle':       ('#455a64', 'Streaming OK -- press Calibrate & collect to begin'),
-        'zeroing':    ('#f9a825', 'CALIBRATING - HOLD STILL (straight leg)'),
-        'sweep':      ('#f9a825', 'CALIBRATING - SWEEP (bend knee + hip)'),
+        'zeroing':    ('#f9a825', 'CALIBRATE 1/3 - HOLD STILL (straight leg)'),
+        'hip':        ('#f9a825', 'CALIBRATE 2/3 - HIP: knee locked, swing the whole leg'),
+        'knee':       ('#f9a825', 'CALIBRATE 3/3 - KNEE: thigh still, bend the knee'),
         'running':    ('#2e7d32', 'RUNNING - logging at 50 Hz'),
     }
 
@@ -818,11 +886,14 @@ class App:
             self.banner.config(bg='#c62828', text="LINK ERROR: " + (s['link_msg'] or ''))
         else:
             color, text = self.PHASE_STYLE.get(phase, ('#607d8b', phase))
-            if phase in ('zeroing', 'sweep') and s['phase_end'] is not None:
-                remain = max(0.0, s['phase_end'] - time.monotonic())
-                text = f"{text}   {remain:0.1f}s"
-                if phase == 'sweep' and s['sweep_preview'] is not None:
-                    text += f"   (shank tilt {s['sweep_preview']:0.0f} deg)"
+            prev = s['sweep_preview']
+            if phase == 'zeroing' and prev is not None:
+                # progress = how quiet the hold is (worst spread vs the threshold)
+                text += f"   (spread {prev:0.1f} deg, need < {ZERO_STILL_TOL_DEG:0.1f})"
+            elif phase == 'hip' and prev is not None:
+                text += f"   ({prev:0.0f}/{HIP_MIN_COVERAGE_DEG:0.0f} deg)"
+            elif phase == 'knee' and prev is not None:
+                text += f"   ({prev:0.0f}/{KNEE_MIN_COVERAGE_DEG:0.0f} deg)"
             elif phase == 'running' and s['cal_note']:
                 text = f"{text}   -   {s['cal_note']}"
             self.banner.config(bg=color, text=text)
@@ -942,6 +1013,72 @@ def _self_test():
     assert seen == 30, seen
     assert valid > 0
     print(f"  synthetic source OK ({valid}/{seen} valid)")
+
+    # --- Collector four-phase state machine, driven by a scripted serial that is
+    #     STILL first (so the zero settles), then moves both segments (so the hip
+    #     and knee sweeps reach coverage). Proves the wiring reaches 'running' with
+    #     a full set of calibration products. ---
+    class _ScriptedSerial:
+        _MT = q_from_axis_angle((0.4, -0.6, 0.7), math.radians(50))
+        _MS = q_from_axis_angle((-0.3, 0.8, 0.2), math.radians(80))
+
+        def __init__(self):
+            self._t0 = time.monotonic(); self._closed = False
+
+        def _q(self, pitch, mount):
+            return q_mul(q_from_axis_angle((0.0, 1.0, 0.0), math.radians(pitch)), mount)
+
+        def readline(self):
+            if self._closed:
+                return b''
+            time.sleep(1.0 / 200.0)
+            t = time.monotonic() - self._t0
+            if t < 1.0:                       # still: straight leg, holds the zero
+                tp = sp = 0.0
+            else:                             # moving: exercise thigh and shank
+                tp = 30.0 * math.sin(2 * math.pi * (t - 1.0) / 1.0)
+                sp = 70.0 * math.sin(2 * math.pi * (t - 1.0) / 1.0)
+            qt = self._q(tp, self._MT); qs = self._q(sp, self._MS)
+            gt = gravity_in_board(qt); gs = gravity_in_board(qs)
+            fv = lambda v: f"{v:.4f}"
+            us = str(int(t * 1e6))
+            fields = ['D', us,
+                      fv(qt[0]), fv(qt[1]), fv(qt[2]), fv(qt[3]),
+                      fv(gt[0]), fv(gt[1]), fv(gt[2]), us,
+                      fv(qs[0]), fv(qs[1]), fv(qs[2]), fv(qs[3]),
+                      fv(gs[0]), fv(gs[1]), fv(gs[2]), '300']
+            return (','.join(fields) + '\n').encode('ascii')
+
+        def reset_input_buffer(self):
+            pass
+
+        def close(self):
+            self._closed = True
+
+    col = Collector('scripted', simulate=True, cal_seconds=0.4, sweep_seconds=0.6)
+    col._open = lambda: _ScriptedSerial()
+    col.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while col.snapshot()['phase'] != 'idle' and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert col.snapshot()['phase'] == 'idle', col.snapshot()['phase']
+        col.request_calibration()
+        seen_phases = set()
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            ph = col.snapshot()['phase']
+            seen_phases.add(ph)
+            if ph == 'running':
+                break
+            time.sleep(0.02)
+    finally:
+        col.stop(); col.join(timeout=2.0)
+    assert {'zeroing', 'hip', 'knee'} <= seen_phases, seen_phases
+    assert col.snapshot()['phase'] == 'running', col.snapshot()['phase']
+    assert col._d_thigh is not None and col._d_shank is not None
+    assert col._f_thigh is not None and col._f_shank is not None
+    print("  collector four-phase state machine OK")
 
     print("knee_gui self-test PASSED.\n")
 
