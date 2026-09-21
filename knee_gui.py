@@ -9,10 +9,10 @@ angle math as the CLI, and adds what a testing session wants:
   * PORT SCAN         -- probe each serial port for valid 'D' lines and pick the
                          master automatically (only the master is on USB; the
                          slave is diagnosed *through* it via shank-valid %).
-  * CONSISTENT 100 Hz -- the jittery ~104 Hz device stream is resampled onto a
-                         fixed 10 ms grid, so both the CSV and the plot are a
-                         clean 100 Hz record regardless of source jitter or the
-                         up-to-8 ms slave-poll stalls.
+  * CONSISTENT 50 Hz  -- the device streams at a fixed 50 Hz; it is resampled onto
+                         a fixed 20 ms grid, so both the CSV and the plot are a
+                         clean 50 Hz record regardless of source jitter or transient
+                         link stalls.
   * OBVIOUS CALIBRATION -- a big colour-coded banner drives the phases
                          (ZEROING -> SWEEP -> RUNNING) with a live countdown.
   * VISUALIZATION     -- knee angle (primary) plus the two segment inclinations
@@ -60,8 +60,8 @@ from knee_collector_uart import (
 # --------------------------------------------------------------------------- #
 # Tuning
 # --------------------------------------------------------------------------- #
-SAMPLE_HZ = 100
-GRID_DT = 1.0 / SAMPLE_HZ          # fixed resample period (s)
+SAMPLE_HZ = 50                     # matches the firmware's fixed 50 Hz emit/stream baseline
+GRID_DT = 1.0 / SAMPLE_HZ          # fixed resample period (s) -> 20 ms
 PLOT_WINDOW_SEC = 12               # rolling x-window shown in the plots
 PLOT_N = int(PLOT_WINDOW_SEC * SAMPLE_HZ) + 50
 STALE_SEC = 0.08                   # a source sample older than this = no fresh data
@@ -150,7 +150,7 @@ class FakeSerial:
     def readline(self):
         if self._closed:
             return b''
-        time.sleep(1.0 / 104.0)            # mimic the device sample rate
+        time.sleep(1.0 / 50.0)             # mimic the device's fixed 50 Hz stream
         return self._line()
 
     def reset_input_buffer(self):
@@ -418,7 +418,7 @@ class Collector(threading.Thread):
 
 
 # --------------------------------------------------------------------------- #
-# Sampler thread: snapshots the collector onto the fixed 100 Hz grid, applies the
+# Sampler thread: snapshots the collector onto the fixed 50 Hz grid, applies the
 # fill/gap gate, appends to the plot ring buffer, and writes the CSV.
 #
 # Collection is SESSION-based and driven by the collector's phase: a session runs
@@ -573,7 +573,7 @@ class App:
         'idle':       ('#455a64', 'Streaming OK -- press Calibrate & collect to begin'),
         'zeroing':    ('#f9a825', 'CALIBRATING - HOLD STILL (straight leg)'),
         'sweep':      ('#f9a825', 'CALIBRATING - SWEEP (bend knee + hip)'),
-        'running':    ('#2e7d32', 'RUNNING - logging at 100 Hz'),
+        'running':    ('#2e7d32', 'RUNNING - logging at 50 Hz'),
     }
 
     def __init__(self, tk, ttk, filedialog, messagebox, Figure, FigureCanvasTkAgg,

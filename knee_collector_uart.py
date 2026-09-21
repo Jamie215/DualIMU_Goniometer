@@ -85,8 +85,8 @@ except ImportError:
     serial = None
 
 # How many consecutive dropped samples we're willing to forward-fill before we
-# stop trusting the held value and mark the stretch as missing. At 104 Hz, 10
-# samples is ~100 ms.
+# stop trusting the held value and mark the stretch as missing. At the fixed 50 Hz
+# stream, 10 samples is ~200 ms.
 MAX_FILL = 10
 
 # Calibration windows (seconds): hold full extension, then flexion reps.
