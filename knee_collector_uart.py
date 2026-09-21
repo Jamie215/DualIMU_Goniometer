@@ -2,9 +2,9 @@
 """
 KNEE ANGLE COLLECTOR  [UART topology, gravity-referenced sagittal angle]
 
-Only the MASTER is read via Serial. Its stream carries, for BOTH segments (thigh
+Only the CENTRAL is read via Serial. Its stream carries, for BOTH segments (thigh
 + shank), a 6-DOF orientation quaternion and the raw accelerometer vector, merged
-on the master's clock. There is ONE angle method (chosen for reliability):
+on the central's clock. There is ONE angle method (chosen for reliability):
 
   GRAVITY-REFERENCED SAGITTAL INCLINOMETER.
   The drift-free, observable quantity in a 6-DOF (accel+gyro) filter is the
@@ -59,10 +59,10 @@ Dropout handling:
 Fusion is 6-DOF (accel + gyro), no magnetometer -- calibration-free and robust
 to nearby metal.
 
-Master line format (18 fields):
+Central line format (18 fields):
   D,<t_thigh_us>,<tw>,<tx>,<ty>,<tz>,<tax>,<tay>,<taz>,
     <t_shank_recv_us>,<sw>,<sx>,<sy>,<sz>,<sax>,<say>,<saz>,<age_us>
-The shank board streams continuously; the master reports its freshest packet and,
+The shank board streams continuously; the central reports its freshest packet and,
 in the last field, that packet's AGE in us (parsed below into 'rtt' for continuity
 with older logs -- same units, a link-health number). A stale/absent shank makes
 t_shank_recv and the shank quaternion 0, i.e. an invalid sample.
@@ -441,7 +441,7 @@ def _self_test():
     assert diagnose_stream(0, 0, 0, '', 'PORT') and 'No data' in \
         diagnose_stream(0, 0, 0, '', 'PORT')
     assert 'fields' in diagnose_stream(5, 0, 0, 'X,1,2,3', 'PORT')
-    assert 'slave' in diagnose_stream(5, 5, 0, 'D,...', 'PORT')
+    assert 'peripheral' in diagnose_stream(5, 5, 0, 'D,...', 'PORT')
     assert diagnose_stream(5, 5, 3, 'D,...', 'PORT', need_valid=1) is None
     print("  stream diagnosis OK")
 
@@ -455,7 +455,7 @@ def diagnose_stream(seen, parsed, valid_count, last_line, port, need_valid=1):
 
     Shared by the CLI's wait_for_stream and the GUI's link-error banner so both
     say the same thing. The three failure modes map to the three points in the
-    chain: nothing on the wire, wrong/old firmware, or a dead slave link.
+    chain: nothing on the wire, wrong/old firmware, or a dead peripheral link.
         seen    -- non-empty lines received
         parsed  -- lines that parsed as a 'D' record
         valid_count -- parsed records whose shank sample was real
@@ -464,26 +464,26 @@ def diagnose_stream(seen, parsed, valid_count, last_line, port, need_valid=1):
     if valid_count >= need_valid:
         return None
     if seen == 0:
-        return (f"No data on {port}. Is the master board plugged in and running? "
+        return (f"No data on {port}. Is the central board plugged in and running? "
                 f"(use --raw to inspect the raw stream)")
     if parsed == 0:
         n = len(last_line.split(','))
         return (f"Receiving data, but it isn't an 18-field 'D' line (last line had "
                 f"{n} fields). Reflash BOTH boards with the current firmware. "
                 f"Last line: {last_line!r}")
-    return ("Master is streaming, but every shank quaternion is the zero sentinel "
-            "-> no data from the slave. Check that the slave is powered and its LED "
+    return ("Central is streaming, but every shank quaternion is the zero sentinel "
+            "-> no data from the peripheral. Check that the peripheral is powered and its LED "
             "is a fast blink (active); a slow idle blink means it isn't getting the "
-            "master's keepalive -- verify BOTH UART wires (Slave TX->Master RX and "
-            "Master TX->Slave RX) and GND between the boards.")
+            "central's keepalive -- verify BOTH UART wires (Peripheral TX->Central RX and "
+            "Central TX->Peripheral RX) and GND between the boards.")
 
 
 def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
-    """Block until the master is sending healthy, parseable, VALID D lines.
+    """Block until the central is sending healthy, parseable, VALID D lines.
 
     This is what stops the collector from silently sitting at 'zeroing' forever:
     the calibration timer only advances on parseable lines, so if the firmware,
-    the format, or the slave link is wrong we'd otherwise hang with no clue. Here
+    the format, or the peripheral link is wrong we'd otherwise hang with no clue. Here
     we watch the raw stream and, every few seconds, say exactly what's wrong via
     diagnose_stream()."""
     ser.reset_input_buffer()   # drop stale buffered bytes so timing starts clean
@@ -493,7 +493,7 @@ def wait_for_stream(ser, port, need_valid=5, warn_every=3.0):
     while valid < need_valid:
         line = ser.readline().decode('ascii', 'ignore').strip()
         if line.startswith('#'):
-            # Surface the master's banners (firmware id, "calibrating, hold still",
+            # Surface the central's banners (firmware id, "calibrating, hold still",
             # gyro bias). Seeing them means the board is alive and starting a
             # collection, so reset the no-data timer instead of warning spuriously.
             print(f"  {line}")
@@ -556,7 +556,7 @@ def run(port, out_path, baud=115200,
 
     # Don't start the calibration clock until real data is flowing, otherwise the
     # zero window can elapse before the user is ready (or hang invisibly on a bad
-    # link). wait_for_stream diagnoses no-data / wrong-firmware / dead-slave.
+    # link). wait_for_stream diagnoses no-data / wrong-firmware / dead-peripheral.
     print(f"Waiting for data on {port} ... (gravity-referenced angle, gyro-fused)")
     wait_for_stream(ser, port)
     start = time.time()
@@ -684,25 +684,25 @@ def monitor(port, baud=115200, zero_seconds=1.5):
             if rec is None:
                 continue
             n += 1
-            # Master loop period, from ITS own clock (t_thigh_us). This localizes a
-            # stall: if the shank goes stale AND this jumps to seconds, the MASTER
+            # Central loop period, from ITS own clock (t_thigh_us). This localizes a
+            # stall: if the shank goes stale AND this jumps to seconds, the CENTRAL
             # froze (e.g. USB print blocking on a slow host) -- both boards' data
             # freeze together. If this stays ~10 ms while the shank is stale, the
-            # master is running fine and the SLAVE went silent (reset / power / sensor).
+            # central is running fine and the PERIPHERAL went silent (reset / power / sensor).
             dthigh_ms = 0.0
             if prev_t_thigh is not None:
                 dthigh_ms = ((rec['t_thigh'] - prev_t_thigh) & 0xFFFFFFFF) / 1000.0
             prev_t_thigh = rec['t_thigh']
             if not is_valid(rec):
                 nbad += 1
-                # Field 18 is now the freshest shank packet's AGE (us): the slave
-                # streams and the master reports how old its newest packet is.
+                # Field 18 is now the freshest shank packet's AGE (us): the peripheral
+                # streams and the central reports how old its newest packet is.
                 # Invalid means nothing fresh enough this cycle -- age 0 = no packet
-                # yet (link/power/wiring), else the slave has stalled past the
+                # yet (link/power/wiring), else the peripheral has stalled past the
                 # firmware's stale window.
-                cause = 'no packet yet' if rec['rtt'] == 0 else 'slave stalled'
+                cause = 'no packet yet' if rec['rtt'] == 0 else 'peripheral stalled'
                 print(f"\r  [shank INVALID: {cause:14s}]  valid:{100*(n-nbad)/n:4.0f}%  "
-                      f"age:{rec['rtt']:8d}us  master dt:{dthigh_ms:7.1f}ms      ", end='')
+                      f"age:{rec['rtt']:8d}us  central dt:{dthigh_ms:7.1f}ms      ", end='')
                 continue
             it = _incl_from_zero(gravity_from_quat(rec, 'thigh'), d_t)
             is_ = _incl_from_zero(gravity_from_quat(rec, 'shank'), d_s)
@@ -712,7 +712,7 @@ def monitor(port, baud=115200, zero_seconds=1.5):
                                         relative_quaternion(rec['thigh_q'], rec['shank_q'])))
             print(f"\r  thigh:{it:5.1f} shank:{is_:5.1f}  accel(t/s):{at:5.1f}/{as_:5.1f}"
                   f"  rel:{rel:5.1f}  valid:{100*(n-nbad)/n:4.0f}%  age:{rec['rtt']:5d}us"
-                  f"  master dt:{dthigh_ms:5.1f}ms  ", end='')
+                  f"  central dt:{dthigh_ms:5.1f}ms  ", end='')
     except KeyboardInterrupt:
         print("\nMonitor stopped.")
     finally:
@@ -729,7 +729,7 @@ if __name__ == '__main__':
                     help='flexion-sweep time for learning each segment forward axis')
     ap.add_argument('--raw', action='store_true',
                     help='dump raw serial lines (with field count) and exit; '
-                         'use this to check the master output format')
+                         'use this to check the central output format')
     ap.add_argument('--monitor', action='store_true',
                     help='live bring-up check: gyro-fused gravity tilts vs a '
                          'filter-free accel tilt and the yaw-prone quaternion angle')
