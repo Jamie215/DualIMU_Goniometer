@@ -214,6 +214,73 @@ requires a reference that **observes the anatomy**.
 
 ---
 
+## Area 3 — Bluetooth (BLE) links: going wireless
+
+**Status:** *Idea raised; not investigated in depth. Captured for later.*
+
+### 3.1 Motivation
+
+Replace the current wired links with Bluetooth Low Energy. Both boards are
+Arduino Nano 33 BLE Rev2 (nRF52840), so BLE radios are already on board and
+unused for data today. Two links are in scope (using the terms as raised;
+endpoints spelled out to avoid ambiguity):
+
+- **Link A — Peripheral ↔ Central** (board-to-board; *"intra-node"*). Currently
+  wired UART on `Serial1` @ 115200, both directions (shank data stream + central
+  keepalive).
+- **Link B — Central ↔ Data-collector PC** (board-to-PC; *"inter-node"*).
+  Currently USB serial (the text `D,...` line protocol).
+
+**Primary driver: REB / safety.** Removing wires — especially any wire running
+across the joint or tethering the subject to a PC / mains — reduces trip,
+entanglement, and electrical-safety concerns, which is easier to justify to a
+Research Ethics Board. Secondary benefits: better wearability and ecological
+validity (freer gait / sit-to-stand), no bench tether.
+
+### 3.2 What it enables, and how (brief)
+
+- A fully untethered subject; either link can be cut independently.
+- **How:** ArduinoBLE on the boards (BLE GATT notifications carry the packets);
+  on the PC side, replace pyserial with a BLE client (e.g. Python `bleak`). The
+  central can act as BLE central toward the peripheral and BLE peripheral toward
+  the PC simultaneously, or the peripheral can advertise/notify directly.
+- **Link B is likely the higher REB value for the lower risk** (removes the PC /
+  mains tether without touching the cross-body data path), so it is the natural
+  first target; Link A removes the wire that actually crosses the knee.
+
+### 3.3 Known drawbacks (already anticipated) and things to watch
+
+- **Packet loss / dropouts** — the existing validity + forward-fill design
+  (`SHANK_STALE_US`, `age_us`) already handles gaps, but BLE adds its own loss
+  and reconnection modes.
+- **Timing / contaminated samples** — BLE quantizes to the connection interval
+  (≥ 7.5 ms) with jitter, so *when* a sample arrives is no longer clean. Mitigate
+  by **timestamping at the source** (have the sampler stamp its own sample time
+  and send it) rather than on receipt as today, decoupling angle timing from link
+  jitter.
+- **Rate / throughput** — 50 Hz (20 ms) is feasible within BLE connection
+  intervals but with less headroom than UART; may need a larger ATT MTU, batching
+  several samples per notification, or a modest rate drop. Validate against the
+  wired baseline.
+- **Framing (a simplification, actually)** — BLE notifications are inherently
+  framed per-notification, so the `0xAA` header / byte-resync logic UART needed
+  (README finding #6) is unnecessary on a BLE link; keep the checksum as a cheap
+  integrity check.
+- **Power** — going wireless implies battery power, adding a LiPo per board
+  (interacts with Area 1: a battery near the board is also a magnetic disturbance
+  source if the magnetometer is ever revived).
+- **2.4 GHz congestion / coexistence** and pairing/reconnection robustness.
+
+### 3.4 Next steps
+
+- Prototype one link at a time (start with Link B). Measure achievable rate,
+  dropout %, and timing jitter vs. the wired baseline, and A/B the resulting angle
+  traces to confirm the signal is not degraded beyond what the analysis needs.
+- Decide per link whether the REB / wearability benefit outweighs the added
+  variability for the intended study.
+
+---
+
 ## How to add an area
 
 Copy the Area template: **Status → Motivation → What it enables & how →
