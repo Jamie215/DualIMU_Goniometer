@@ -420,6 +420,11 @@ shank board at a right angle to the thigh board reads ~90°.
 - **Dropouts** — watch the run summary (`valid / filled / missing`); if the link
   is flaky over long wires, drop `Serial1` to 230400 on both boards.
 
+For larger research directions being weighed — magnetometer fusion and the
+absolute-vs-relative angle question, absolute (anatomical) angle via functional
+calibration, wireless (BLE) links, and scaling to multiple nodes / joints — see
+[`docs/areas_to_explore.md`](docs/areas_to_explore.md).
+
 ---
 
 ## Files
