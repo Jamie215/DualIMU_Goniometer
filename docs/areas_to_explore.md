@@ -281,6 +281,68 @@ validity (freer gait / sit-to-stand), no bench tether.
 
 ---
 
+## Area 4 — Scaling to multiple nodes / multiple joints
+
+**Status:** *Idea raised; not investigated in depth. Captured for later.*
+
+### 4.1 Motivation
+
+Today the system is one pair (thigh + shank) measuring one joint (knee). Many
+studies want more: a **kinematic chain** on one limb (thigh + shank + foot →
+hip / knee / ankle), **bilateral** capture (both knees), or a fuller lower-body
+montage. Two topologies were raised:
+
+- **A. Star — multiple peripherals → one central.** Several sensor boards stream
+  to a single hub, which aggregates and forwards one stream to the PC.
+- **B. Multiple independent central–peripheral pairs.** Several 2-board units,
+  each measuring its own joint (reusing today's firmware), aggregated at the PC.
+
+### 4.2 What it enables
+
+- Multi-joint / multi-segment angles from one capture (e.g. hip–knee–ankle),
+  bilateral symmetry measures, richer gait analysis.
+- With more segments, *between-segment* angles beyond a single pair become
+  possible (any two instrumented segments), subject to the same relative-vs-
+  absolute limits in Areas 1–2.
+
+### 4.3 How / key design considerations (brief)
+
+- **Wiring pushes toward BLE (ties to Area 3).** The Nano 33 BLE exposes only one
+  hardware UART (`Serial1`), so a *wired* star to one central does not fan out
+  cleanly. A BLE central, by contrast, can hold **multiple** peripheral
+  connections — so topology A is most natural over BLE.
+- **Node addressing.** The packet needs a **node-ID** field (and the `D,...` line
+  / CSV must generalize from fixed thigh/shank columns to N segments / M joints).
+- **Time alignment becomes critical.** Any angle between two segments needs
+  time-aligned samples. With several asynchronous streams, receipt-time stamping
+  is not enough — move to **source timestamps + a common time base / clock sync**
+  across nodes. This is the single biggest correctness risk when scaling.
+- **Bandwidth / rate scaling.** N nodes × 50 Hz × packet size shares one link
+  budget (a BLE central shares connection intervals across peripherals); may cap
+  the achievable per-node rate or node count.
+- **Calibration scales linearly.** Each segment needs its own zero + sweep, so the
+  calibration protocol and UI must scale (more steps, clearer subject guidance).
+
+### 4.4 Topology trade-off
+
+- **A. Star (many peripherals → one central):** single aggregated stream, one
+  time base at the hub, simpler PC-side ingest — but the hub's link budget /
+  connection count is the ceiling and it is a single point of failure.
+- **B. Independent pairs:** modular and reuses current firmware per pair; each pair
+  is isolated — but the **PC** must ingest and time-align multiple streams, and it
+  needs more radios / USB ports and duplicates central hardware.
+
+### 4.5 Next steps
+
+- Define a node-ID'd packet + generalized collector data model (N segments,
+  M joints) before committing to a topology.
+- Prototype cross-node time sync and quantify residual skew vs. the angle accuracy
+  the study needs.
+- Pick topology by study scale: a BLE star (A) for a compact multi-segment montage
+  on one operator; independent pairs (B) when modularity / isolation matters more.
+
+---
+
 ## How to add an area
 
 Copy the Area template: **Status → Motivation → What it enables & how →
