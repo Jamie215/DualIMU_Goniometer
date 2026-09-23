@@ -9,7 +9,7 @@ At rest the prototype is **very stable**: jitter is ~0.01° SD, drift is effecti
 zero (≤0.005°/min), and there were no dropouts. Between runs the resting value
 differed by up to 0.33°, which is most likely how the ruler was set back down,
 not sensor error. **Caveat:** in this setup only the ruler-side (shank) node
-contributes to the angle — see [§4.4](#44-only-the-shank-node-was-actually-tested).
+contributes to the angle — see [§4.3](#43-only-the-shank-node-was-actually-tested).
 
 ## 1. Setup
 
@@ -29,7 +29,8 @@ relative to the zeroing pose, so that constant offset is calibrated out.
 ## 2. Method
 
 - **Trim:** analysis uses `t_session_s ≥ 20 s`, excluding the calibration and the
-  return from the sweep (see §4.3 for whether 20 s is enough).
+  return from the sweep. 20 s was chosen from the test procedure (time needed to
+  lay the ruler back down and let go).
 - **Metrics per run:**
   - **Mean** — offset from the calibrated zero (return-to-zero error).
   - **SD** — short-term jitter.
@@ -39,9 +40,7 @@ relative to the zeroing pose, so that constant offset is calibrated out.
   - **Detrended SD** — noise after removing the drift line.
   - **30 s block means / SDs** — low-frequency wander.
   - **Allan deviation** — how noise averages down across time scales
-    (computed on de-duplicated source samples, see §4.6).
-  - **Settling time** — last time the angle was more than 0.05° / 0.1° away from the
-    steady-state mean.
+    (computed on de-duplicated source samples, see §4.6). See §3.2 for what it means.
   - **Link / timing health** — `status`, `rtt_us` (shank packet age), row spacing,
     duplicated `t_thigh_us`.
 
@@ -65,12 +64,22 @@ to them; needs `numpy pandas matplotlib`).
 | 30 s block SD (typical) | 0.004–0.011°* | 0.005–0.012° | 0.005–0.012° |
 | Spread of 30 s block means | −0.27 … −0.31° | −0.01 … −0.04° | +0.02 … +0.04° |
 
-\*Run 1's first block (20–50 s) had SD 0.024° because of the slow settling in §4.3.
+\*Run 1's first block (20–50 s) had SD 0.024° (a ~0.07° step in the first ~30 s,
+attributed to the ruler/tape shifting while the setup settled).
 
 **Across runs:** SD of the three run means = 0.18°, range = 0.33° (run 1 is the
 outlier; runs 2 and 3 agree within 0.05°).
 
 ### 3.2 Allan deviation
+
+Allan deviation answers: *if I average the signal over τ seconds, how much do
+consecutive averages differ?* The data is cut into back-to-back blocks of length τ,
+each block is averaged, and σ(τ) = √(½·mean[(next block − this block)²]).
+- Falling with τ → white noise; averaging helps.
+- Flat → the noise floor (bias instability); averaging longer no longer helps.
+- Rising with τ → drift / random walk; the longer you wait, the further it wanders.
+
+Unlike a single SD, it separates short-term jitter from long-term drift.
 
 | Averaging time τ | Run 1 | Run 2 | Run 3 |
 |---|---|---|---|
@@ -80,18 +89,12 @@ outlier; runs 2 and 3 agree within 0.05°).
 | 30 s | 0.0061° | 0.0045° | 0.0053° |
 | 60 s | 0.0070° | 0.0038° | 0.0056° |
 
-Flat at ~0.005–0.007° from 10 to 60 s: no random-walk / bias-instability growth is
-visible at these time scales. (The rise from 0.1 s to 1 s mostly reflects
-the 0.01° output quantisation — see §4.1.)
+Flat at ~0.004–0.007° from 10 to 60 s: no rising (drift) branch is visible at
+these time scales. (The small rise from 0.1 s to 1 s comes from consecutive
+samples being strongly correlated — the Mahony filter smooths the signal and the
+output is quantised to 0.01°, see §4.1 — not from drift.)
 
-### 3.3 Settling after calibration
-
-| | Run 1 | Run 2 | Run 3 |
-|---|---|---|---|
-| Within 0.1° of final mean after | 20.5 s | 14.3 s | 16.2 s |
-| Within 0.05° of final mean after | 23.1 s | 14.5 s | 16.2 s |
-
-### 3.4 Link and timing
+### 3.3 Link and timing
 
 | | Run 1 | Run 2 | Run 3 |
 |---|---|---|---|
@@ -117,23 +120,22 @@ probably lower. Log more decimals (e.g. `.4f` for the angle, `.6f` for quaternio
 to measure the real noise floor.
 
 ### 4.2 No meaningful drift
-Linear drift over ~5 min is ≤ 0.03° in every run, and 30 s block means stay within
-±0.02° of each other once settled. Over the tested duration the gravity-referenced
-angle does not drift.
+A fitted slope is always non-zero on real data, so its existence alone doesn't
+mean the sensor drifts. Here the evidence says it doesn't:
+- Slopes are tiny and **change sign** between runs (−0.005, −0.0003, +0.001 °/min).
+  Excluding the first 30 s (t ≥ 50 s) they are −0.003, +0.001, +0.003 °/min.
+  That is noise, not a consistent trend.
+- Total change over ~5 min is ≤ 0.03°, about the size of the 0.01° logging step.
+- Allan deviation has no rising branch up to τ = 60 s (§3.2).
+- By design the tilt is **anchored to the accelerometer's measurement of gravity**, so it
+  can't build up error the way heading (yaw) does (§4.5). Anything left would be
+  slow and bounded, e.g. accelerometer bias shifting with temperature, not a
+  steady slide.
 
-### 4.3 Settling time: 20 s trim is borderline
-The ruler was still returning from 90° when the running phase began at t = 8 s
-(readings of −20° to −47°), so the first seconds of "running" are motion, not
-static data. After the return:
-- Run 2 settled by ~14.5 s, run 3 by ~16 s. Run 3 sat at ≈ +0.5° from 12–16 s and
-  then stepped down — looks like the ruler/tape shifting, not the filter.
-- **Run 1 kept creeping ≈ 0.07° from 20 s to ~50 s** (5 s means: −0.23 → −0.29°)
-  before levelling off.
+Extrapolating a 5-minute slope to hours isn't valid. The data supports "no
+detectable drift over 5 min"; a 30–60 min static run is needed to claim more.
 
-Recommendation: trim ~40 s, or better, trim with a rule — start the analysis window
-once the 5 s rolling mean stays within 0.05° of the final value.
-
-### 4.4 Only the shank node was actually tested
+### 4.3 Only the shank node was actually tested
 `incl_thigh_deg` is exactly 0.00 for every running-phase sample. The desk node
 never tilted > 5° during the sweep, so `estimate_forward` returned `None` and the
 code treated the thigh as fixed (knee = −shank inclination). The reported angle
@@ -141,28 +143,84 @@ therefore reflects **only the ruler node's** gravity tilt; the desk node's noise
 and drift are not in these numbers. To characterise the full two-sensor difference,
 tilt both nodes during the sweep.
 
-### 4.5 Offset vs. true error
+### 4.4 Offset vs. true error
 Run 1's −0.30° offset is ~20× its SD, so it is a real difference in resting pose,
-not noise. Most likely the ruler came back to a slightly different position (tape
-compliance, ruler edge, desk contact). Without an independent reference this cannot
-be separated from sensor return-to-zero error — a fixture with a hard stop would
-allow that.
+not noise. The calibration data (§4.7) shows the ruler really did end up in a
+different place: run 2's zero pose matches the pose run 1 ended in to within
+0.03°. A fixture with a hard stop would still be needed to measure the sensor's own
+return-to-zero error independently.
 
-### 4.6 Heading (yaw) drift does not leak into the angle
+### 4.5 Heading (yaw) drift does not leak into the angle
 Yaw from the raw quaternions drifts ~5 °/min on the thigh node and 1.7–3.5 °/min on
 the shank node (expected for 6-DOF fusion with no magnetometer), and the two nodes
 drift at different rates. The knee angle is flat regardless — this directly
 confirms the method's yaw-invariance by design.
 
-### 4.7 Timing
+### 4.6 Timing
 - No dropouts or forward-filled samples in any run.
-- The CSV is written on a 50 Hz grid, but new thigh samples arrive every ~22.9 ms
-  (~43.6 Hz; ~40.5 unique/s), so ~19 % of rows repeat the previous sample.
-  **De-duplicate on `t_thigh_us` before any spectral / Allan analysis.**
+- **Duplicate rows are copies, not repeated measurements.** `t_thigh_us` is the
+  central board's `micros()` stamp for each fused sample, so two different
+  measurements can never share it, even if their values are identical. The GUI
+  writes a row every 20 ms (50 Hz) using whatever sample is newest. When no new
+  packet has arrived since the last row, it writes the same one again.
+- **The source runs slower than 50 Hz, not faster.** The central firmware emits every
+  ~22.9 ms (~43.6 Hz) instead of 20 ms, because `central_imu.ino` sets
+  `lastEmitUs = tnow` (the timer restarts from whenever the loop gets round to it,
+  so each cycle's ~2.9 ms of work is added on). `lastEmitUs += EMIT_PERIOD_US` would hold
+  50 Hz. Because PC-side timing also jitters (row spacing median 16 ms), some rows
+  repeat a sample and some source samples are overwritten before being logged
+  (~40.5 unique/s logged vs ~43.6 produced).
+- The fix is not to lower the rate. Either (a) match the source to the 50 Hz
+  grid (firmware fix above), or (b) log one row per *received* sample instead of
+  on a fixed grid. For analysis, **de-duplicate on `t_thigh_us`**.
 - Shank packet age is mostly fresh (µs) with a small tail at one packet period
   (~22 ms).
 - Board clock vs PC wall clock differed by ~0.22 % (300.07 s vs 300.73 s). Irrelevant
   here, but matters for long synchronised recordings.
+
+### 4.7 What the calibration data shows
+The zeroing and sweep samples are in the CSV, so each run's calibration vectors
+(`d_i`, `f_i`) can be recomputed with the repo's own functions (`calibration.py`).
+
+| | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| Max shank tilt during sweep | 88.7° | 89.5° | 89.7° |
+| Shank motion inside the 2 s zeroing window (mean / max) | 0.008° / 0.019° | 0.012° / 0.068° | 0.008° / 0.016° |
+| Desk node tilt during sweep (max) | 0.38° | 0.33° | 0.39° |
+| Desk node tilt, t ≥ 20 s (mean ± SD) | 0.044 ± 0.011° | 0.078 ± 0.010° | 0.018 ± 0.008° |
+
+| Comparison | Run 1 vs 2 | Run 1 vs 3 | Run 2 vs 3 |
+|---|---|---|---|
+| Shank zero direction `d_shank` differs by | 0.62° | 0.50° | 0.33° |
+| Desk zero direction `d_thigh` differs by | 0.05° | 0.07° | 0.08° |
+| Shank forward axis `f_shank` differs by | 2.9° | 3.0° | 0.1° |
+
+| Continuity between runs | Run 1 end → run 2 zero | Run 2 end → run 3 zero |
+|---|---|---|
+| Shank pose change | 0.06° | 0.13° |
+| Desk node pose change | 0.02° | 0.02° |
+
+What this supports:
+- **The zeroing hold was clean.** The shank moved < 0.02° inside the 2 s window
+  (run 2 had a 0.07° blip), so noise in `d_i` is negligible.
+- **The zero pose itself varied by 0.3–0.6° between calibrations** because of where
+  the ruler lay, while the untouched desk node agreed with itself within 0.08°
+  across ~17 min. Each run's "0°" is simply wherever the ruler was lying.
+- **Run 1's −0.30° offset was a real move of the ruler, and it stayed put.** Run 2 zeroed on almost
+  exactly the pose run 1 ended in (0.06° apart; +0.33° vs +0.30° in run 1's frame).
+- **The sweep direction doesn't matter for a test at 0°.** Run 1 swept along an axis
+  ~3° off runs 2 and 3. Near 0° the angle depends almost only on `d_i`; an error in
+  `f_i` scales the reading by ~cos(error) (0.14 % for 3°) and only matters at large
+  angles. Its effect must be tested at a known non-zero angle.
+- **Handling the ruler tilts the desk node by ~0.3–0.4°** (desk flex or
+  the filter reacting to the knock). It returned to within 0.02–0.08° of its own zero,
+  with SD ~0.01° and slopes ≤ 0.005 °/min, the same as the shank. Because the desk
+  node isn't in the angle (§4.3), this is a free, independent check that the
+  sensor itself returns to zero and holds steady.
+
+Limits: with no fixture, pose differences can't be split into "ruler moved" vs
+"sensor error" beyond the continuity check above, and three runs is too few for
+statistics on calibration repeatability.
 
 ## 5. Summary numbers for reporting
 
@@ -172,7 +230,8 @@ confirms the method's yaw-invariance by design.
 | Drift | ≤ 0.005 °/min (≤ 0.03° over 5 min) |
 | Allan deviation, τ = 1 s / 60 s | ≈ 0.005° / ≈ 0.004–0.007° |
 | Run-to-run repeatability of resting value | 0.33° range (SD 0.18°) |
-| Settling after calibration movement | 14–23 s to within 0.05° |
+| Desk (unmoved) node: SD / drift / return after handling | ~0.01° / ≤ 0.005 °/min / within 0.02–0.08° |
+| Zero-pose variation between calibrations (ruler placement) | 0.33–0.62° |
 | Data validity | 100 %, no dropouts |
 
 ## 6. Suggested next tests
@@ -184,3 +243,6 @@ confirms the method's yaw-invariance by design.
    repeatability from repositioning error.
 4. **Higher-precision logging** (§4.1) to measure the true noise floor.
 5. **Longer static run** (30–60 min) to check drift and Allan deviation at longer τ.
+6. **Log the raw accelerometer** (already in the central's serial line, not in the
+   GUI CSV). An unfiltered gravity reading would show whether a slow creep is
+   physical (the accelerometer moves too) or the filter settling (only the quaternion moves).
