@@ -163,18 +163,26 @@ confirms the method's yaw-invariance by design.
   measurements can never share it, even if their values are identical. The GUI
   writes a row every 20 ms (50 Hz) using whatever sample is newest. When no new
   packet has arrived since the last row, it writes the same one again.
-- **The source runs slower than 50 Hz, not faster.** The central firmware emits every
-  ~22.9 ms (~43.6 Hz) instead of 20 ms, because `central_imu.ino` sets
-  `lastEmitUs = tnow` (the timer restarts from whenever the loop gets round to it,
-  so each cycle's ~2.9 ms of work is added on). `lastEmitUs += EMIT_PERIOD_US` would hold
-  50 Hz. Because PC-side timing also jitters (row spacing median 16 ms), some rows
-  repeat a sample and some source samples are overwritten before being logged
-  (~40.5 unique/s logged vs ~43.6 produced).
+- **The source runs slower than 50 Hz, not faster.** The central firmware emitted
+  every ~22.9 ms (~43.6 Hz) instead of 20 ms. `central_imu.ino` reset
+  `lastEmitUs = tnow`, so any lateness in noticing a due tick was added to the
+  next period. Because PC-side timing also jitters (row spacing median 16 ms),
+  some rows repeat a sample and some source samples are overwritten before being
+  logged (~40.5 unique/s logged vs ~43.6 produced).
+  *Fixed after this test:* the emit timer now advances on a fixed schedule
+  (`lastEmitUs += EMIT_PERIOD_US`, banner `gated-50hz-sched`).
 - The fix is not to lower the rate. Either (a) match the source to the 50 Hz
   grid (firmware fix above), or (b) log one row per *received* sample instead of
   on a fixed grid. For analysis, **de-duplicate on `t_thigh_us`**.
-- Shank packet age is mostly fresh (µs) with a small tail at one packet period
-  (~22 ms).
+- **Shank packet age takes only three values:** ~11 µs (62 %), ~10.6–10.9 ms (36 %)
+  and ~22 ms (1.4 %), with nothing in between. Packets arrive every ~20 ms on
+  their own clock, so a smooth spread of ages would be expected if the central's
+  loop checked the link continuously. The gaps suggest the loop is only checking
+  about every ~10.6 ms, i.e. something inside each loop pass blocks for ~10 ms.
+  That would also explain the ~22.9 ms period (≈ two passes plus the emit work),
+  and it limits what the schedule fix can do: the average rate becomes 50 Hz, but
+  individual gaps would alternate around ~10.6 / ~21 ms rather than a steady 20 ms.
+  **Check in the re-test:** the spacing of `t_thigh_us` and the `rtt_us` distribution.
 - Board clock vs PC wall clock differed by ~0.22 % (300.07 s vs 300.73 s). Irrelevant
   here, but matters for long synchronised recordings.
 

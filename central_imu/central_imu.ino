@@ -184,7 +184,7 @@ void setup() {
     Serial.println("ERR,IMU init failed");
     while (1) { ; }
   }
-  Serial.println("# CENTRAL fw: gated-50hz (collect while USB open; shank keepalive-gated)");
+  Serial.println("# CENTRAL fw: gated-50hz-sched (collect while USB open; shank keepalive-gated)");
   Serial.println("# CENTRAL cols: D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,"
                  "t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us");
   lastMicros = micros();
@@ -279,7 +279,12 @@ void loop() {
   // the peripheral; neither board runs faster than the other).
   unsigned long tnow = micros();
   if (tnow - lastEmitUs >= EMIT_PERIOD_US) {
-    lastEmitUs = tnow;
+    // Advance on a fixed schedule rather than to "now": resetting to tnow added
+    // each cycle's lateness to the next period and stretched 20 ms to ~23 ms
+    // (~43.6 Hz). If we've fallen a whole period behind (e.g. a USB stall), resync
+    // instead of bursting lines to catch up.
+    lastEmitUs += EMIT_PERIOD_US;
+    if (tnow - lastEmitUs >= EMIT_PERIOD_US) lastEmitUs = tnow;
 
     if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
       float ax, ay, az, gx, gy, gz;
