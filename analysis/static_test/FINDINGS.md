@@ -2,7 +2,7 @@
 
 **Logger:** `knee_gui.py` (CSV session output)
 - **Session 1 (§1–6):** 2026-09-23, flat desk. `knee_static_1.csv` – `knee_static_3.csv` (≈5 min each)
-- **Session 2 (§7):** 2026-09-24, raised rig (desk node ~1 cm higher than the ruler node), central
+- **Session 2 (§7):** 2026-09-24, raised rig (desk node ~1 cm higher than the ruler node, ~5 cm apart), central
   emit-timer fix flashed. `knee_static_4.csv` – `knee_static_6.csv` (≈5–5.5 min each)
 
 ## Headline
@@ -278,16 +278,17 @@ Numbers in §5 are from session 1 (flat desk) unless marked. See §7 for session
 nothing moving, does the reading also stay unchanged?
 
 **Setup.** The nodes were mounted on a different rig. The desk (thigh) node sat
-about 1 cm higher than the ruler (shank) node, with the two roughly in a straight
-line. Small tilts may have come in during calibration or from the wires. The
+about 1 cm higher than the ruler (shank) node, ~5 cm apart, with the two roughly in
+a straight line. Small tilts may have come in during calibration or from the wires. The
 central firmware had the emit-timer change (§4.6). Everything else, including the
 calibration procedure and 5 min holds, was the same.
 
 A constant height or tilt difference doesn't affect the angle by itself: each node's
 tilt is measured against gravity *relative to its own zeroing pose*, so a fixed
 mounting tilt is captured at zeroing and cancels. The measured zero-pose tilt of the
-ruler node (4–15°, below) is larger than a 1 cm step alone would give over a ruler's
-length (~2° over 30 cm). That fits the wires or handling tilting the board itself. What
+ruler node (4.3°, 4.8°, 15°, below) is in the range a 1 cm step over ~5 cm can produce
+(up to atan(1/5) ≈ 11° if the ruler bridges the step). How the ruler sat against the
+step, plus the wires or handling, would explain the run-to-run differences. What
 the rig did change is the zero pose and how rigid and repeatable the setup is:
 
 | | Session 1 (runs 1–3) | Session 2 (runs 4–6) |
