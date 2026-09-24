@@ -112,6 +112,8 @@ struct __attribute__((packed)) PDiag {
   int16_t  accMaxMg;      // max |accel|, milli-g
   int16_t  integDps10;    // |Mahony integral term| now, 0.1 deg/s
   int16_t  biasDps100;    // largest axis of the last bias measurement, 0.01 deg/s
+  uint16_t badSamples;    // samples rejected by the sensor-fault guard this window
+  uint16_t readMaxMs;     // slowest accel+gyro read this window, ms
   uint8_t  biasOk;        // 1 = last bias measurement accepted (board was still)
   uint8_t  active;
 };
@@ -243,7 +245,7 @@ void setup() {
     Serial.println("ERR,IMU init failed");
     while (1) { ; }
   }
-  Serial.println("# CENTRAL fw: gated-50hz-sched-diag (collect while USB open; shank keepalive-gated)");
+  Serial.println("# CENTRAL fw: gated-50hz-onewrite-diag (collect while USB open; shank keepalive-gated)");
   Serial.println("# CENTRAL cols: D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,"
                  "t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us");
   lastMicros = micros();
@@ -280,6 +282,21 @@ void stopCollecting() {
   collecting = false;
   digitalWrite(LED_BUILTIN, LOW);      // dark = idle
 }
+
+// A Print target that accumulates one output line in RAM, so the line can be
+// formatted exactly as Serial.print() would format it and then sent in one write.
+struct LineBuf : public Print {
+  char buf[256];
+  size_t len = 0;
+  void reset() { len = 0; }
+  size_t write(uint8_t c) override {
+    if (len >= sizeof(buf)) return 0;   // never overflow; a D line is ~150 bytes
+    buf[len++] = (char)c;
+    return 1;
+  }
+  using Print::write;
+};
+LineBuf line;
 
 // Freshest shank state received from the stream, plus when (central clock) it was
 // parsed. shankRecvUs == 0 until the first good packet arrives.
@@ -382,12 +399,12 @@ void pdiagReport() {
     "# PDIAG up_ms=%lu active=%u pkts=%u keepalives=%u rate_reinits=%u stall_reinits=%u"
     " begin_fails=%u last_reinit_ms=%u loop_max_us=%lu send_late_avg_us=%lu"
     " send_late_max_us=%lu gyro_max_dps=%d gyro_avg_dps10=%d acc_min_mg=%d acc_max_mg=%d"
-    " integ_dps10=%d bias_dps100=%d bias_ok=%u\n",
+    " integ_dps10=%d bias_dps100=%d bias_ok=%u bad_samples=%u read_max_ms=%u\n",
     (unsigned long)p.upMs, p.active, p.pktsSent, p.keepalives, p.rateReinits,
     p.stallReinits, p.beginFails, p.lastReinitMs, (unsigned long)p.loopMaxUs,
     (unsigned long)p.sendLateAvgUs, (unsigned long)p.sendLateMaxUs,
     p.gyroMaxDps, p.gyroAvgDps10, p.accMinMg, p.accMaxMg, p.integDps10,
-    p.biasDps100, p.biasOk);
+    p.biasDps100, p.biasOk, p.badSamples, p.readMaxMs);
   diagWrite(n);
 }
 #endif
@@ -477,31 +494,37 @@ void loop() {
     if (!shankFresh) dStale++;
 
     unsigned long pr0 = micros();
-    Serial.print("D,");
-    Serial.print(tnow);       Serial.print(',');
-    Serial.print(q0, 4);      Serial.print(',');
-    Serial.print(q1, 4);      Serial.print(',');
-    Serial.print(q2, 4);      Serial.print(',');
-    Serial.print(q3, 4);      Serial.print(',');
-    Serial.print(thighAx, 4); Serial.print(',');
-    Serial.print(thighAy, 4); Serial.print(',');
-    Serial.print(thighAz, 4); Serial.print(',');
+    // Assemble the whole line in RAM, then send it with ONE write. Each separate
+    // Serial.print() was its own blocking USB transfer: ~36 of them took ~11.7 ms
+    // per line (measured), which with the ~10.7 ms IMU read pushed each cycle to
+    // ~23 ms (~43 Hz). One write of the same bytes takes well under 1 ms.
+    line.reset();
+    line.print("D,");
+    line.print(tnow);       line.print(',');
+    line.print(q0, 4);      line.print(',');
+    line.print(q1, 4);      line.print(',');
+    line.print(q2, 4);      line.print(',');
+    line.print(q3, 4);      line.print(',');
+    line.print(thighAx, 4); line.print(',');
+    line.print(thighAy, 4); line.print(',');
+    line.print(thighAz, 4); line.print(',');
     // Shank block: freshest packet if within SHANK_STALE_US, else the zero sentinel
     // (timestamp + quaternion + accel all 0) so the collector marks it invalid.
     if (shankFresh) {
-      Serial.print(shankRecvUs); Serial.print(',');
-      Serial.print(shankQ[0], 4); Serial.print(',');
-      Serial.print(shankQ[1], 4); Serial.print(',');
-      Serial.print(shankQ[2], 4); Serial.print(',');
-      Serial.print(shankQ[3], 4); Serial.print(',');
-      Serial.print(shankA[0], 4); Serial.print(',');
-      Serial.print(shankA[1], 4); Serial.print(',');
-      Serial.print(shankA[2], 4); Serial.print(',');
+      line.print(shankRecvUs); line.print(',');
+      line.print(shankQ[0], 4); line.print(',');
+      line.print(shankQ[1], 4); line.print(',');
+      line.print(shankQ[2], 4); line.print(',');
+      line.print(shankQ[3], 4); line.print(',');
+      line.print(shankA[0], 4); line.print(',');
+      line.print(shankA[1], 4); line.print(',');
+      line.print(shankA[2], 4); line.print(',');
     } else {
-      Serial.print(0); Serial.print(',');   // t_shank_recv_us
-      for (int i = 0; i < 7; i++) { Serial.print(0); Serial.print(','); }  // q+accel
+      line.print(0); line.print(',');   // t_shank_recv_us
+      for (int i = 0; i < 7; i++) { line.print(0); line.print(','); }  // q+accel
     }
-    Serial.println(age);      // freshest shank packet age (us); 0 if none yet
+    line.println(age);      // freshest shank packet age (us); 0 if none yet
+    Serial.write((const uint8_t *)line.buf, line.len);
     unsigned long prUs = micros() - pr0;
     if (prUs > dPrintMax) dPrintMax = prUs;
     dPrintSum += prUs;

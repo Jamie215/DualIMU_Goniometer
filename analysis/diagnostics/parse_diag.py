@@ -70,4 +70,5 @@ if __name__ == '__main__':
                 'frames_ok', 'cs_fail', 'skipped_bytes', 'rx_max', 'stale'], 'CENTRAL')
     summary(p, ['pkts', 'keepalives', 'rate_reinits', 'stall_reinits', 'begin_fails',
                 'last_reinit_ms', 'send_late_max_us', 'loop_max_us', 'gyro_max_dps',
-                'acc_min_mg', 'acc_max_mg', 'integ_dps10', 'bias_ok'], 'PERIPHERAL')
+                'acc_min_mg', 'acc_max_mg', 'integ_dps10', 'bias_ok', 'bad_samples',
+                'read_max_ms'], 'PERIPHERAL')

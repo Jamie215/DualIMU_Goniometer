@@ -290,7 +290,12 @@ start the central calibrates + seeds fresh and forwards a **keepalive** to the p
 (over `Central TX -> Peripheral RX`); the peripheral calibrates and streams while the keepalive
 arrives and idles when it stops (port closed / central reset). Both boards emit at a
 fixed **50 Hz** (down from ~104 Hz) for generous link + USB timing margin; the peripheral
-also self-heals a bad low-rate sensor start by re-initializing (no manual reset). LED:
+also self-heals a bad low-rate sensor start by re-initializing (no manual reset).
+It also guards against a failing sensor: a sample with a hung read (> 50 ms),
+an impossible |accel| (< 0.25 g or > 4 g), or a rotation rate over 1000 °/s while
+the accelerometer reads ~1 g is never fed to the filter and is sent as the all-zero
+quaternion (a gap, not a wrong angle); every re-init resets the filter's integral
+term; and if no good sample arrives for 5 s the peripheral reboots itself. LED:
 central lit = collecting; peripheral fast blink = active, slow blink = idle, solid = sensor
 stalled, 3 flashes = boot.
 
