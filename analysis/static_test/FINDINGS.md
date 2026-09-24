@@ -1,7 +1,9 @@
 # Static stability test — findings
 
-**Date collected:** 2026-09-23  **Logger:** `knee_gui.py` (CSV session output)
-**Files:** `knee_static_1.csv`, `knee_static_2.csv`, `knee_static_3.csv` (≈5 min each)
+**Logger:** `knee_gui.py` (CSV session output)
+- **Session 1 (§1–6):** 2026-09-23, flat desk. `knee_static_1.csv` – `knee_static_3.csv` (≈5 min each)
+- **Session 2 (§7):** 2026-09-24, raised rig with a height difference between the nodes, central
+  emit-timer fix flashed. `knee_static_4.csv` – `knee_static_6.csv` (≈5–5.5 min each)
 
 ## Headline
 
@@ -10,6 +12,11 @@ zero (≤0.005°/min), and there were no dropouts. Between runs the resting valu
 differed by up to 0.33°, which is most likely how the ruler was set back down,
 not sensor error. **Caveat:** in this setup only the ruler-side (shank) node
 contributes to the angle — see [§4.3](#43-only-the-shank-node-was-actually-tested).
+
+A second session on a raised rig (§7) repeated the same short-term noise and link
+reliability at a non-level, non-zero resting pose. Its drift and offsets are
+dominated by the rig moving, and the central emit-timer change did not fix the
+~23 ms sample period.
 
 ## 1. Setup
 
@@ -169,8 +176,10 @@ confirms the method's yaw-invariance by design.
   next period. Because PC-side timing also jitters (row spacing median 16 ms),
   some rows repeat a sample and some source samples are overwritten before being
   logged (~40.5 unique/s logged vs ~43.6 produced).
-  *Fixed after this test:* the emit timer now advances on a fixed schedule
-  (`lastEmitUs += EMIT_PERIOD_US`, banner `gated-50hz-sched`).
+  *Attempted fix after this test:* the emit timer now advances on a fixed schedule
+  (`lastEmitUs += EMIT_PERIOD_US`, banner `gated-50hz-sched`). **Session 2 showed
+  no change** (§7.2), so the lateness isn't small drift building up: each pass
+  through the emit code takes ~23 ms.
 - The fix is not to lower the rate. Either (a) match the source to the 50 Hz
   grid (firmware fix above), or (b) log one row per *received* sample instead of
   on a fixed grid. For analysis, **de-duplicate on `t_thigh_us`**.
@@ -182,7 +191,7 @@ confirms the method's yaw-invariance by design.
   That would also explain the ~22.9 ms period (≈ two passes plus the emit work),
   and it limits what the schedule fix can do: the average rate becomes 50 Hz, but
   individual gaps would alternate around ~10.6 / ~21 ms rather than a steady 20 ms.
-  **Check in the re-test:** the spacing of `t_thigh_us` and the `rtt_us` distribution.
+  Session 2 confirmed the same pattern (§7.2).
 - Board clock vs PC wall clock differed by ~0.22 % (300.07 s vs 300.73 s). Irrelevant
   here, but matters for long synchronised recordings.
 
@@ -241,8 +250,11 @@ statistics on calibration repeatability.
 | Desk (unmoved) node: SD / drift / return after handling | ~0.01° / ≤ 0.005 °/min / within 0.02–0.08° |
 | Zero-pose variation between calibrations (ruler placement) | 0.33–0.62° |
 | Data validity | 100 %, no dropouts |
+| Short-term noise, raised rig (session 2, Allan dev. τ = 1 s) | 0.005–0.007° (same as session 1) |
 
 ## 6. Suggested next tests
+
+Numbers in §5 are from session 1 (flat desk) unless marked. See §7 for session 2.
 
 1. **Static at known non-zero angles** (e.g. 30°, 45°, 90° on a fixture) — a zero
    test cannot reveal scale-factor or cross-axis error.
@@ -254,3 +266,87 @@ statistics on calibration repeatability.
 6. **Log the raw accelerometer** (already in the central's serial line, not in the
    GUI CSV). An unfiltered gravity reading would show whether a slow creep is
    physical (the accelerometer moves too) or the filter settling (only the quaternion moves).
+7. **Stiffen the raised rig.** Clamp the ruler or add a hard stop, and fix the raised
+   node rigidly (§7.2 item 6 is the baseline to beat).
+8. **Time the central's emit pass.** Measure how long the IMU read and the serial
+   output each take, then send each line as one buffered write (§7.2 item 2).
+
+## 7. Session 2 (runs 4–6): raised rig
+
+### 7.1 What changed
+The nodes were mounted on a different rig with a height difference between them,
+and the central firmware had the emit-timer change (§4.6). Everything else, including
+the calibration procedure and 5 min holds, was the same.
+
+A constant height or tilt difference doesn't affect the angle by itself: each node's
+tilt is measured against gravity *relative to its own zeroing pose*, so a fixed
+mounting tilt is captured at zeroing and cancels. What the rig did change is the zero
+pose and how rigid and repeatable the setup is:
+
+| | Session 1 (runs 1–3) | Session 2 (runs 4–6) |
+|---|---|---|
+| Sweep angle reached | 88.7–89.7° | 52.5–63.7° |
+| Ruler node tilt from level during zeroing | ~0.5–1° | 4.3°, 4.8°, 15° |
+| Sweep direction in the ruler node's frame | +x, consistent | −x; run 6 a further 38° off |
+| Desk node disturbance during sweep | 0.3–0.4° | 0.6–1.8° |
+| Desk node offset from its own zero, t ≥ 20 s | 0.02–0.08° | 0.13–0.42° |
+| Resting angle, t ≥ 20 s | −0.30, −0.02, +0.03° | +6.38, −1.27, −0.84° |
+| SD, t ≥ 20 s (detrended) | 0.011–0.015° (0.011–0.013°) | 0.050, 0.128, 0.031° (0.016, 0.047, 0.012°) |
+| Drift, 20 s–end | ≤ 0.005 °/min, changes sign | +0.033, +0.082, +0.019 °/min, always the same direction |
+
+Drift in each part of the run (°/min):
+
+| Run | 20–100 s | 100–200 s | 200 s–end |
+|---|---|---|---|
+| 1–3 | −0.03 … −0.01 | 0.00 … +0.01 | −0.01 … 0.00 |
+| 4 | +0.037 | +0.033 | +0.034 |
+| 5 | +0.20 (step) | +0.029 | +0.12 (step) |
+| 6 | +0.041 | +0.023 | +0.017 |
+
+![Session 2 plots](session2_plots.png)
+
+*Left: knee angle for the whole run. Right: the desk node's tilt from its own zero,
+and the knee angle's change from its value at 20 s.*
+
+### 7.2 What session 2 shows
+
+1. **Short-term noise is unchanged across rigs and a power cycle.**
+
+   | τ | Session 1 | Session 2 |
+   |---|---|---|
+   | 0.1 s | 0.0027° | 0.0027–0.0032° |
+   | 1 s | 0.0045–0.0048° | 0.0047–0.0071° |
+
+   Detrended SD in runs 4 and 6 (0.016°, 0.012°) matches session 1. The rig adds
+   slow movement, not jitter.
+2. **The emit-timer change did not change the rate.** Median source period is
+   23.00–23.02 ms (session 1: 22.94–22.95 ms), ~40 unique samples/s, and 19–20 %
+   duplicate rows. Shank packet age still takes only the values ~11 µs, ~10.6 ms and ~22 ms.
+   The bottleneck is inside the emit pass itself. The likely causes, not yet measured,
+   are ~36 separate blocking `Serial.print` calls per line and slow I²C reads of the IMU.
+3. **Link reliability repeated.** 100 % valid samples, no dropouts. Shank packets one
+   cycle late (~22 ms) fell from 0.5–2.4 % to 0.03–0.15 %.
+4. **Static hold at a non-zero, non-level pose.** The zero pose was 4–15° off level
+   and the ruler came to rest 0.8–6.4° from zero. Calibration still worked with a
+   shorter, reversed sweep, and at rest the reading was as steady (short-term) as at
+   0°. So the method doesn't need a level or perfectly aligned zero pose, and stays
+   stable away from 0°.
+   This is **not** an off-angle *accuracy* test: the true angles are unknown (no
+   reference), and at ≤ 6.4° an error in the learned sweep direction barely shows
+   (it scales the reading by ~cos(error)). Scale-factor error needs known angles of
+   30–90°.
+5. **Heading drift doesn't leak into the angle, now in a second session.** After the
+   power cycle, heading drift changed a lot (desk node 0.2–0.8 °/min vs ~5 °/min before;
+   ruler node 1.0–1.4 vs 1.7–3.5 °/min), and the angle was unaffected in both sessions.
+6. **Rig baseline.** Return position varied by 7.6° across runs, handling moved the
+   "fixed" node 0.6–1.8°, and creep ran at 0.02–0.04 °/min with steps of ~0.1–0.15°.
+   These are the numbers a stiffer rig should beat.
+7. **Worst-case limit on sensor drift.** Run 4's steady +0.034 °/min cannot be split into
+   rig creep and sensor drift from this data. Sensor drift can't be larger than that.
+   Session 1 puts it at ≤ 0.005 °/min.
+
+### 7.3 What session 2 cannot show
+- Sensor drift or return-to-zero error on their own, because the rig moved and nothing
+  independent recorded by how much. Logging raw accelerometer data would separate them.
+- Absolute or off-angle accuracy (no reference angle).
+- Offset or drift figures pooled with session 1.
