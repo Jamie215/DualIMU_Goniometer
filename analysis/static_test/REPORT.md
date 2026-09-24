@@ -130,8 +130,8 @@ repeated values, dropped samples, and row times up to ~20 ms off.
 
 ### 2. The ruler-side node's sensor can go bad
 
-In a separate 1-minute recording where nothing moved at all (board powered for
-~26 minutes at the time):
+In a separate 1-minute recording where nothing moved at all (the central board had
+been running ~26 minutes since its last reset, from its `t_thigh_us` clock):
 
 - **The ruler node's reported orientation spun** by a median of ~27° between
   consecutive samples, up to ~2000 °/s. The desk node stayed within 0.05°.
