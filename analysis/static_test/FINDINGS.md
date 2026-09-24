@@ -1,5 +1,8 @@
 # Static stability test — findings
 
+> A cleaned-up summary of these results is in [REPORT.md](REPORT.md). This file is the
+> detailed working record.
+
 **Logger:** `knee_gui.py` (CSV session output)
 - **Session 1 (§1–6):** 2026-09-23, flat desk. `knee_static_1.csv` – `knee_static_3.csv` (≈5 min each)
 - **Session 2 (§7):** 2026-09-24, raised rig (desk node ~1 cm higher than the ruler node, ~5 cm apart), central
