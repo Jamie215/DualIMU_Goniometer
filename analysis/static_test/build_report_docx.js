@@ -2,7 +2,10 @@
 // version always matches the Markdown. Handles the subset of Markdown the report
 // uses: headings, paragraphs, bullets (2-space nesting), numbered lists, tables,
 // the figure, italic captions, blockquotes, **bold**, `code`, *italic*, [links](url).
-// Usage: npm install docx && node build_report_docx.js Static_Stability_Test_Report.docx
+// NOTE: Static_Stability_Test_Report.docx is now edited directly in Word and is the
+// maintained version. Don't point this script at that file, or it will overwrite
+// those edits; write to a different name if you need a Markdown-based draft.
+// Usage: npm install docx && node build_report_docx.js draft_from_markdown.docx
 // (run plot_report.py first so report_stability.png is up to date).
 const fs = require('fs');
 const {

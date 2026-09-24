@@ -2,6 +2,10 @@
 
 **Test dates:** 2026-09-23 and 2026-09-24 · **Hardware:** 2 × Arduino Nano 33 BLE Rev2 (BMI270), wired UART link · **Logger:** `knee_gui.py`
 
+> **The maintained version of this report is `Static_Stability_Test_Report.docx`,**
+> which has been edited directly in Word (it adds the endurance-test section and a
+> revised layout). This Markdown is an earlier draft and is no longer kept in sync.
+>
 > Detailed analysis, per-run tables and method notes are in [FINDINGS.md](FINDINGS.md).
 
 ## Purpose of this document
