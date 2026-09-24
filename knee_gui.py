@@ -27,6 +27,10 @@ angle math as the CLI, and adds what a testing session wants:
                          dead peripheral link) using the shared diagnose_stream().
   * AUTO-SAVE         -- a timestamped CSV is opened at connect; "Save copy..."
                          relocates it. A crash never loses a session.
+  * DIAGNOSTICS LOG   -- '#' lines from the central (firmware banners and, with a
+                         diagnostic build, the once-a-second CDIAG / PDIAG health
+                         lines) are saved to knee_diag_<timestamp>.log for the
+                         whole connection, independent of collection sessions.
 
 Run:
   python knee_gui.py                 # launch the GUI (scan for ports)
@@ -215,9 +219,12 @@ def scan_ports(seconds=1.2):
 # --------------------------------------------------------------------------- #
 class Collector(threading.Thread):
     def __init__(self, port, simulate=False, baud=115200,
-                 cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS):
+                 cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS,
+                 diag_prefix='knee_diag'):
         super().__init__(daemon=True)
         self.port = port
+        self.diag_prefix = diag_prefix
+        self._diag_f = None
         self.simulate = simulate
         self.baud = baud
         self.cal_seconds = cal_seconds
@@ -242,6 +249,7 @@ class Collector(threading.Thread):
             'valid': False,
             'angle': None, 'incl_t': None, 'incl_s': None,
             'thigh_q': None, 'shank_q': None, 't_us': 0, 'rtt': 0,
+            'thigh_a': None, 'shank_a': None,
             'recv_mono': 0.0,
         }
 
@@ -302,6 +310,13 @@ class Collector(threading.Thread):
 
             now = time.monotonic()
             phase = self._state['phase']
+
+            if raw.startswith('#'):
+                # Firmware banner or diagnostic line: log it, never parse it as data,
+                # and keep it out of last_raw so link-fault messages stay meaningful.
+                last_seen = now
+                self._log_diag(raw)
+                continue
 
             if raw:
                 last_seen = now
@@ -406,6 +421,8 @@ class Collector(threading.Thread):
                 angle=angle, incl_t=incl_t, incl_s=incl_s,
                 thigh_q=rec['thigh_q'] if rec else None,
                 shank_q=rec['shank_q'] if (rec and valid) else None,
+                thigh_a=rec['thigh_a'] if rec else None,
+                shank_a=rec['shank_a'] if (rec and valid) else None,
                 t_us=rec['t_thigh'] if rec else 0,
                 rtt=rec['rtt'] if rec else 0,
                 recv_mono=now if valid else self._state['recv_mono'],
@@ -414,6 +431,22 @@ class Collector(threading.Thread):
         try:
             ser.close()
         except Exception:
+            pass
+        if self._diag_f is not None:
+            self._diag_f.close()
+            self._diag_f = None
+
+    def _log_diag(self, line):
+        """Append a '#' line from the central, wall-clock stamped, to the diag log
+        (opened on the first line, so nothing is created for a silent port)."""
+        try:
+            if self._diag_f is None:
+                path = datetime.now().strftime(self.diag_prefix + "_%Y%m%d_%H%M%S.log")
+                self._diag_f = open(path, 'w')
+            self._diag_f.write(datetime.now().isoformat(timespec='milliseconds')
+                               + ' ' + line + '\n')
+            self._diag_f.flush()
+        except OSError:
             pass
 
 
@@ -433,7 +466,8 @@ class Sampler(threading.Thread):
               'thigh_qw', 'thigh_qx', 'thigh_qy', 'thigh_qz',
               'shank_qw', 'shank_qx', 'shank_qy', 'shank_qz',
               'knee_angle_deg', 'incl_thigh_deg', 'incl_shank_deg',
-              'status', 'phase', 'rtt_us', 'fill_mode']
+              'status', 'phase', 'rtt_us', 'fill_mode',
+              'thigh_ax', 'thigh_ay', 'thigh_az', 'shank_ax', 'shank_ay', 'shank_az']
     ACTIVE = ('zeroing', 'sweep', 'running')
 
     def __init__(self, collector, path_prefix='knee'):
@@ -541,6 +575,11 @@ class Sampler(threading.Thread):
                     tq = s['thigh_q']; sq = s['shank_q']
                     tq_cols = [f"{c:.4f}" for c in tq] if tq else ['', '', '', '']
                     sq_cols = [f"{c:.4f}" for c in sq] if sq else ['', '', '', '']
+                    # raw accelerometer (g), filter-free: shows whether a board
+                    # physically moved, independent of the orientation filter
+                    ta = s['thigh_a']; sa = s['shank_a']
+                    ta_cols = [f"{c:.4f}" for c in ta] if ta else ['', '', '']
+                    sa_cols = [f"{c:.4f}" for c in sa] if sa else ['', '', '']
                     writer.writerow([
                         datetime.now().isoformat(timespec='milliseconds'),
                         f"{t_rel:.3f}", s['t_us'],
@@ -549,6 +588,7 @@ class Sampler(threading.Thread):
                         f"{incl_t:.2f}" if incl_t == incl_t else '',
                         f"{incl_s:.2f}" if incl_s == incl_s else '',
                         status, phase, s['rtt'], int(fill_mode),
+                        *ta_cols, *sa_cols,
                     ])
 
                 next_t += GRID_DT

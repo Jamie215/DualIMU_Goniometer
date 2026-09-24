@@ -313,6 +313,19 @@ fields are `0`; the collector marks such samples invalid (and short gaps are
 forward-filled). `age_us` is the freshest shank packet's age (the CSV keeps the
 `rtt_us` column name for continuity — same units, a link-health number).
 
+**Diagnostics (`DIAG 1` in both sketches).** The peripheral also sends a once-a-second
+health frame on the same link (`0xAB` header, packed `PDiag` struct, XOR checksum;
+the struct must match in both files). The central relays it to the PC as
+`# PDIAG k=v ...` and adds its own `# CDIAG k=v ...` line (emit interval, IMU-read
+and print durations, parser counters, UART backlog, IMU health). `knee_gui.py`
+saves every `#` line to `knee_diag_<timestamp>.log`, and
+`analysis/diagnostics/parse_diag.py <log>` turns it into per-second CSVs and a
+per-minute summary. Flash **both** boards with a diagnostic build: an older central
+doesn't know the `0xAB` frame and can lose a shank packet a second resyncing.
+The GUI CSV also carries the raw accelerometer of each board
+(`thigh_ax..az`, `shank_ax..az`, g), which shows physical movement independent of
+the orientation filter.
+
 ---
 
 ## Findings / debugging log
@@ -433,4 +446,5 @@ calibration, wireless (BLE) links, and scaling to multiple nodes / joints — se
 central_imu/central_imu.ino   thigh board: 6-DOF filter, reads peripheral stream, streams to PC
 peripheral_imu/peripheral_imu.ino     shank board: 6-DOF filter, streams packets over UART
 knee_collector_uart.py      PC collector: calibration, angle math, CSV, --selftest
+analysis/diagnostics/parse_diag.py   diag log (# CDIAG / # PDIAG lines) -> CSVs + per-minute summary
 ```

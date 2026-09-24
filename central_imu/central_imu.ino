@@ -38,6 +38,16 @@
  *
  * Wiring (BOTH directions needed): Peripheral TX(D1)->Central RX(D0) for the stream, and
  * Central TX(D1)->Peripheral RX(D0) for the keepalive, plus GND<->GND.
+ *
+ * DIAGNOSTICS (DIAG = 1): once a second this board prints a '# CDIAG ...' line
+ * (its own loop/emit timing, link-parser counters, thigh IMU health) and relays
+ * the peripheral's once-a-second health frame as '# PDIAG ...'. Both are
+ * space-separated key=value lines; the collector and GUI ignore '#' lines for
+ * data, and the GUI saves them to a knee_diag_*.log file next to the CSVs.
+ * Peripheral health frame (sizeof(PDiag) + 2 bytes):
+ *   [0] 0xAB header, [1..N] PDiag struct (LE, packed), [N+1] XOR of [1..N]
+ * Flash BOTH boards with a diagnostic build: an older central doesn't know the
+ * 0xAB frame and may lose a shank packet each second to resyncing.
  */
 
 #include "Arduino_BMI270_BMM150.h"
@@ -76,6 +86,55 @@ const unsigned long SHANK_STALE_US = 30000;
 const unsigned long EMIT_PERIOD_US = 20000;   // 50 Hz
 unsigned long lastEmitUs = 0;
 float thighAx = 0, thighAy = 0, thighAz = 1;  // latest thigh raw accel, cached for the emit
+
+// --------------------------------------------------------------------------- //
+// Diagnostics. Set DIAG to 0 to drop the '#' lines (the 0xAB frame is still
+// parsed, harmlessly, if a diagnostic peripheral is attached).
+// --------------------------------------------------------------------------- //
+#define DIAG 1
+const unsigned long DIAG_PERIOD_MS = 1000;
+
+// Peripheral health frame -- MUST match peripheral_imu.ino byte for byte.
+struct __attribute__((packed)) PDiag {
+  uint32_t upMs;          // peripheral millis()
+  uint16_t pktsSent;      // shank packets sent this window
+  uint16_t keepalives;    // 'S' bytes received this window
+  uint16_t rateReinits;   // cumulative low-rate watchdog re-inits
+  uint16_t stallReinits;  // cumulative stall watchdog re-inits
+  uint16_t beginFails;    // cumulative IMU.begin() failures
+  uint16_t lastReinitMs;  // duration of the most recent re-init
+  uint32_t loopMaxUs;     // longest loop() pass this window
+  uint32_t sendLateMaxUs; // worst lateness of a send vs its 20 ms due time
+  uint32_t sendLateAvgUs; // mean lateness
+  int16_t  gyroMaxDps;    // max |gyro| (bias-corrected), deg/s
+  int16_t  gyroAvgDps10;  // mean |gyro|, 0.1 deg/s
+  int16_t  accMinMg;      // min |accel|, milli-g
+  int16_t  accMaxMg;      // max |accel|, milli-g
+  int16_t  integDps10;    // |Mahony integral term| now, 0.1 deg/s
+  int16_t  biasDps100;    // largest axis of the last bias measurement, 0.01 deg/s
+  uint8_t  biasOk;        // 1 = last bias measurement accepted (board was still)
+  uint8_t  active;
+};
+const uint8_t HDR_SHANK = 0xAA;
+const uint8_t HDR_PDIAG = 0xAB;
+const int SHANK_FRAME_LEN = 30;
+const int PDIAG_FRAME_LEN = sizeof(PDiag) + 2;
+PDiag pdiag;
+bool pdiagFresh = false;
+
+// Central-side window counters (reset every DIAG_PERIOD_MS).
+unsigned long dEmits = 0, dImuMiss = 0, dStale = 0;
+unsigned long dEmitMin = 0xFFFFFFFF, dEmitMax = 0, dEmitSum = 0, dEmitN = 0;
+unsigned long dImuMax = 0, dImuSum = 0, dPrintMax = 0, dPrintSum = 0;
+unsigned long dLoopGapMax = 0, dPumpGapMax = 0, dSerChkMax = 0;
+unsigned long dFramesOk = 0, dCsFail = 0, dSkipped = 0, dPdiagOk = 0;
+int dRxMax = 0;
+float dGyroMax = 0, dAccMin = 99, dAccMax = 0;
+unsigned long lastEmitTnow = 0, lastLoopUs = 0, lastPumpUs = 0, lastDiagMs = 0;
+unsigned long lastDiagWriteUs = 0;   // how long the previous diag line's single write took
+// A diag write stalls the loop once a second; don't let that pollute the gap and
+// interval maxima it is trying to measure (each flag is cleared where it's used).
+bool skipLoopGap = false, skipPumpGap = false, skipEmitIv = false;
 
 // Collect-on-demand. The boards run the IMUs only while a collection is active,
 // not free-running from power. "Active" = the USB port is open (a host -- the
@@ -184,7 +243,7 @@ void setup() {
     Serial.println("ERR,IMU init failed");
     while (1) { ; }
   }
-  Serial.println("# CENTRAL fw: gated-50hz-sched (collect while USB open; shank keepalive-gated)");
+  Serial.println("# CENTRAL fw: gated-50hz-sched-diag (collect while USB open; shank keepalive-gated)");
   Serial.println("# CENTRAL cols: D,t_thigh_us,tw,tx,ty,tz,tax,tay,taz,"
                  "t_shank_recv_us,sw,sx,sy,sz,sax,say,saz,age_us");
   lastMicros = micros();
@@ -231,37 +290,121 @@ unsigned long shankRecvUs = 0;
 // Persistent frame-assembly state for the free-running stream. We resync on the
 // 0xAA header and validate the XOR checksum, so a lost/extra byte costs one frame
 // (checksum fail -> drop -> resync to the next header), never a lasting desync.
-uint8_t rxBuf[30];
+uint8_t rxBuf[64];
 int rxHave = 0;
+int rxWant = 0;
 
 // Non-blocking: consume every byte currently buffered, updating the cache with the
 // LAST complete, checksum-good packet. Called often so the UART buffer never backs
 // up; whatever the peripheral streamed while we were busy is waiting here, not lost.
 void pumpShankStream() {
+  unsigned long now = micros();
+  if (lastPumpUs != 0 && !skipPumpGap && now - lastPumpUs > dPumpGapMax) dPumpGapMax = now - lastPumpUs;
+  lastPumpUs = now;
+  skipPumpGap = false;
+  int avail = Serial1.available();
+  if (avail > dRxMax) dRxMax = avail;         // backlog: near the buffer size = overflow risk
+
   while (Serial1.available()) {
     uint8_t b = Serial1.read();
-    if (rxHave == 0) {
-      if (b == 0xAA) { rxBuf[0] = b; rxHave = 1; }   // wait for a header to start
+    if (rxHave == 0) {                        // hunting for a header
+      if (b == HDR_SHANK)      rxWant = SHANK_FRAME_LEN;
+      else if (b == HDR_PDIAG) rxWant = PDIAG_FRAME_LEN;
+      else { dSkipped++; continue; }
+      rxBuf[0] = b; rxHave = 1;
     } else {
       rxBuf[rxHave++] = b;
-      if (rxHave == 30) {
+      if (rxHave == rxWant) {
         uint8_t cs = 0;
-        for (int i = 1; i <= 28; i++) cs ^= rxBuf[i];
-        if (cs == rxBuf[29]) {                        // good frame -> update cache
+        for (int i = 1; i <= rxWant - 2; i++) cs ^= rxBuf[i];
+        if (cs != rxBuf[rxWant - 1]) {
+          dCsFail++;                          // bad frame: drop, resync on next header
+        } else if (rxBuf[0] == HDR_SHANK) {   // good shank frame -> update cache
           memcpy(shankQ, &rxBuf[1], 16);
           memcpy(shankA, &rxBuf[17], 12);
           shankRecvUs = micros();
+          dFramesOk++;
+        } else {                              // good peripheral health frame
+          memcpy(&pdiag, &rxBuf[1], sizeof(PDiag));
+          pdiagFresh = true;
+          dPdiagOk++;
         }
-        rxHave = 0;   // start the next frame (bad checksum just resyncs on 0xAA)
+        rxHave = 0;
       }
     }
   }
 }
 
+#if DIAG
+// One buffered write per line (integers only, so no float printf needed). Its
+// own duration is reported on the NEXT line as diag_write_us -- a direct
+// comparison against print_us, the many-small-prints cost of each data line.
+char diagBuf[400];
+void diagWrite(int n) {
+  if (n <= 0) return;
+  if (n > (int)sizeof(diagBuf)) n = sizeof(diagBuf);
+  unsigned long t0 = micros();
+  Serial.write((const uint8_t *)diagBuf, n);
+  lastDiagWriteUs = micros() - t0;
+  skipLoopGap = skipPumpGap = skipEmitIv = true;
+}
+
+void diagReport() {
+  unsigned long up = millis();
+  int n = snprintf(diagBuf, sizeof(diagBuf),
+    "# CDIAG up_ms=%lu emits=%lu emit_min_us=%lu emit_avg_us=%lu emit_max_us=%lu"
+    " imu_avg_us=%lu imu_max_us=%lu imu_miss=%lu print_avg_us=%lu print_max_us=%lu"
+    " diag_write_us=%lu loop_gap_max_us=%lu pump_gap_max_us=%lu serial_chk_max_us=%lu"
+    " frames_ok=%lu cs_fail=%lu skipped_bytes=%lu rx_max=%d stale=%lu pdiag_ok=%lu"
+    " gyro_max_dps=%d acc_min_mg=%d acc_max_mg=%d integ_dps10=%d\n",
+    up, dEmits, dEmitN ? dEmitMin : 0, dEmitN ? dEmitSum / dEmitN : 0, dEmitMax,
+    dEmits ? dImuSum / dEmits : 0, dImuMax, dImuMiss,
+    dEmits ? dPrintSum / dEmits : 0, dPrintMax,
+    lastDiagWriteUs, dLoopGapMax, dPumpGapMax, dSerChkMax,
+    dFramesOk, dCsFail, dSkipped, dRxMax, dStale, dPdiagOk,
+    (int)dGyroMax, (int)(dAccMin * 1000), (int)(dAccMax * 1000),
+    (int)(sqrt(integralFBx * integralFBx + integralFBy * integralFBy +
+               integralFBz * integralFBz) * RAD_TO_DEG * 10));
+  diagWrite(n);
+
+  dEmits = dImuMiss = dStale = 0;
+  dEmitMin = 0xFFFFFFFF; dEmitMax = dEmitSum = dEmitN = 0;
+  dImuMax = dImuSum = dPrintMax = dPrintSum = 0;
+  dLoopGapMax = dPumpGapMax = dSerChkMax = 0;
+  dFramesOk = dCsFail = dSkipped = dPdiagOk = 0;
+  dRxMax = 0;
+  dGyroMax = 0; dAccMin = 99; dAccMax = 0;
+}
+
+void pdiagReport() {
+  const PDiag &p = pdiag;
+  int n = snprintf(diagBuf, sizeof(diagBuf),
+    "# PDIAG up_ms=%lu active=%u pkts=%u keepalives=%u rate_reinits=%u stall_reinits=%u"
+    " begin_fails=%u last_reinit_ms=%u loop_max_us=%lu send_late_avg_us=%lu"
+    " send_late_max_us=%lu gyro_max_dps=%d gyro_avg_dps10=%d acc_min_mg=%d acc_max_mg=%d"
+    " integ_dps10=%d bias_dps100=%d bias_ok=%u\n",
+    (unsigned long)p.upMs, p.active, p.pktsSent, p.keepalives, p.rateReinits,
+    p.stallReinits, p.beginFails, p.lastReinitMs, (unsigned long)p.loopMaxUs,
+    (unsigned long)p.sendLateAvgUs, (unsigned long)p.sendLateMaxUs,
+    p.gyroMaxDps, p.gyroAvgDps10, p.accMinMg, p.accMaxMg, p.integDps10,
+    p.biasDps100, p.biasOk);
+  diagWrite(n);
+}
+#endif
+
 void loop() {
+  unsigned long loopNow = micros();
+  if (lastLoopUs != 0 && !skipLoopGap && loopNow - lastLoopUs > dLoopGapMax) dLoopGapMax = loopNow - lastLoopUs;
+  lastLoopUs = loopNow;
+  skipLoopGap = false;
+
   // Collect only while a host has the USB port open. Closing it idles both boards
   // (the peripheral via the keepalive timing out) so the IMUs aren't run unobserved.
-  if (!Serial) {
+  unsigned long chk0 = micros();
+  bool hostOpen = static_cast<bool>(Serial);
+  unsigned long chk = micros() - chk0;
+  if (chk > dSerChkMax) dSerChkMax = chk;
+  if (!hostOpen) {
     if (collecting) stopCollecting();
     return;
   }
@@ -286,6 +429,17 @@ void loop() {
     lastEmitUs += EMIT_PERIOD_US;
     if (tnow - lastEmitUs >= EMIT_PERIOD_US) lastEmitUs = tnow;
 
+    dEmits++;
+    if (lastEmitTnow != 0 && !skipEmitIv) {
+      unsigned long iv = tnow - lastEmitTnow;
+      if (iv < dEmitMin) dEmitMin = iv;
+      if (iv > dEmitMax) dEmitMax = iv;
+      dEmitSum += iv; dEmitN++;
+    }
+    lastEmitTnow = tnow;
+    skipEmitIv = false;
+    unsigned long imu0 = micros();
+
     if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
       float ax, ay, az, gx, gy, gz;
       readAccel(ax, ay, az);
@@ -298,7 +452,18 @@ void loop() {
       if (dt <= 0 || dt > 0.5f) dt = 1.0f / 50.0f;
 
       mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+
+      float gm = sqrt(gx * gx + gy * gy + gz * gz);
+      float am = sqrt(ax * ax + ay * ay + az * az);
+      if (gm > dGyroMax) dGyroMax = gm;
+      if (am < dAccMin) dAccMin = am;
+      if (am > dAccMax) dAccMax = am;
+    } else {
+      dImuMiss++;                     // no fresh IMU sample: thigh orientation not updated
     }
+    unsigned long imuUs = micros() - imu0;
+    if (imuUs > dImuMax) dImuMax = imuUs;
+    dImuSum += imuUs;
 
     pumpShankStream();                // grab the freshest packet before emitting
     // Age the packet against a timestamp taken AFTER the final pump: that pump can
@@ -309,7 +474,9 @@ void loop() {
     unsigned long age = (shankRecvUs == 0 || tRef < shankRecvUs) ? 0
                                                                  : (tRef - shankRecvUs);
     bool shankFresh = (shankRecvUs != 0) && (age <= SHANK_STALE_US);
+    if (!shankFresh) dStale++;
 
+    unsigned long pr0 = micros();
     Serial.print("D,");
     Serial.print(tnow);       Serial.print(',');
     Serial.print(q0, 4);      Serial.print(',');
@@ -335,5 +502,13 @@ void loop() {
       for (int i = 0; i < 7; i++) { Serial.print(0); Serial.print(','); }  // q+accel
     }
     Serial.println(age);      // freshest shank packet age (us); 0 if none yet
+    unsigned long prUs = micros() - pr0;
+    if (prUs > dPrintMax) dPrintMax = prUs;
+    dPrintSum += prUs;
   }
+
+#if DIAG
+  if (pdiagFresh) { pdiagFresh = false; pdiagReport(); }
+  if (millis() - lastDiagMs >= DIAG_PERIOD_MS) { lastDiagMs = millis(); diagReport(); }
+#endif
 }
