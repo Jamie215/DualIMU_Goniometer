@@ -199,6 +199,8 @@ confirms the method's yaw-invariance by design.
   and it limits what the schedule fix can do: the average rate becomes 50 Hz, but
   individual gaps would alternate around ~10.6 / ~21 ms rather than a steady 20 ms.
   Session 2 confirmed the same pattern (§7.2).
+  *Measured later (§8.3):* each cycle spends ~10.7 ms reading the thigh IMU and ~11.7 ms
+  printing the line as ~36 separate prints. The central now sends each line with one write.
 - Board clock vs PC wall clock differed by ~0.22 % (300.07 s vs 300.73 s). Irrelevant
   here, but matters for long synchronised recordings.
 
@@ -394,3 +396,57 @@ change during the hold.
   independent recorded by how much. Logging raw accelerometer data would separate them.
 - Absolute or off-angle accuracy (no reference angle).
 - Offset or drift figures pooled with session 1.
+
+## 8. Long unattended run with the diagnostic build (2026-09-24)
+
+`knee_long_test.csv` + `knee_diag_20260924_123748.log`. Both boards on USB power,
+static, nobody present. Board uptime from the central's `t_thigh_us` and the
+peripheral's `up_ms` (they agree; neither board reset).
+
+### 8.1 Timeline
+
+| Uptime | Ruler (peripheral) board | Knee angle |
+|---|---|---|
+| 0–20.3 min | 45 packets/s, loop ≤ 13.5 ms, accel 0.99 g, gyro 0 | 100 % valid; 0.80°, SD 0.016°, drift −0.001 °/min (3–18 min of session) |
+| 20.4 min | First single reads hanging ~190 ms (`loop_max_us` ~194,000) with garbage accel (max 4.4 g); **no re-inits yet** | ~0.4 % samples corrupted |
+| 21–26 min | Hung reads more frequent; gyro 1500–2400 °/s while still; Mahony integral winds up 0 → 17 °/s | Corrupted accel 17 % → 67 % per minute; angle swings by tens of degrees |
+| 26.3 min | First re-init: reports success but takes 1.94 s (normally 16 ms); **no sample ever again** | Shank data stops |
+| 26–41 min | Re-init every ~2 s (rate + stall watchdogs), 0 samples, `begin_fails` 0, still receiving keepalives, still sending health frames | 41,000 "missing" rows |
+
+Corrupted accelerometer readings were fixed patterns, mostly (0, −0.112, 0) g (two
+axes at −1 count, one correct) and (1.000, 2.404, 0) g, alternating with correct
+readings. Every packet passed its checksum.
+
+### 8.2 What it rules in and out
+- **Link:** clean throughout (`cs_fail` 0, `skipped_bytes` 0, `rx_max` ≤ 74 bytes).
+- **Board reset / power loss:** ruled out; the peripheral's `up_ms` never restarted.
+- **Calibration:** not involved; the fault is between the peripheral MCU and its BMI270.
+- **The ~190 ms stalls are hung sensor reads, not self-heal restarts.** This corrects
+  the earlier reading of the no-motion recording, where they were attributed to the
+  restart routine.
+- The central's own BMI270 stayed healthy for all 41 minutes.
+- Same onset window (~20–26 min uptime) as the no-motion recording, which ran older,
+  non-diagnostic firmware. Leading suspect: that board's hardware (sensor, joints,
+  heat); a role swap between the boards will confirm or rule it out.
+
+### 8.3 Timing, measured
+
+| Per central cycle | Time |
+|---|---|
+| Thigh IMU read (`imu_avg_us`) | 10.7 ms |
+| Data line as ~36 prints (`print_avg_us`) | 11.7 ms |
+| Diagnostic line (longer) as one write (`diag_write_us`) | 0.7 ms |
+| `Serial` open check (`serial_chk_max_us`) | ~1.1 ms |
+
+After the shank data stopped, the central printed zeros instead of seven decimal
+numbers and its period fell from ~23 ms to exactly 20.0 ms. That confirms the
+print step is what overruns the budget.
+
+### 8.4 Changes made in response
+- Central: each data line is assembled in RAM and sent with one `Serial.write`.
+- Peripheral: implausible samples (read > 50 ms, |a| outside 0.25–4 g, > 1000 °/s
+  with |a| ≈ 1 g) are sent as the all-zero quaternion (collector marks them invalid)
+  and never reach the filter; the Mahony integral resets on every re-init; the board
+  reboots if no good sample arrives for 5 s. New PDIAG fields: `bad_samples`,
+  `read_max_ms`.
+

@@ -15,8 +15,9 @@ Testing also turned up three problems to fix before dynamic (movement) testing:
 
 1. **The sample rate is ~40 Hz, not the configured 50 Hz**, and ~20 % of CSV rows
    are duplicates. The static results are unaffected.
-2. **The ruler-side node's sensor can go bad.** In one recording it reported
-   spinning while completely still, and the valid-sample rate fell to 93 %.
+2. **The ruler-side node's sensor fails after ~20 minutes of running.** Its reads
+   start hanging and returning garbage, and a few minutes later it stops producing
+   data. Seen twice, both times with the board untouched.
 3. **Only one of the two sensors was exercised** by these tests, because of how
    calibration works when one node never tilts.
 
@@ -98,6 +99,9 @@ Session 1 is flat from 10 s to 60 s, so no drift appears over these time scales.
   zeroed 4–15° off level, and the sweep was shorter (~55°) and in the opposite
   direction. Calibration still worked and the reading was just as steady.
 - **Link reliability:** 100 % valid samples in all six runs, no dropouts.
+- **Longest clean hold so far:** the first ~18 minutes of the 40-minute run held
+  at 0.80° with 0.016° jitter and −0.001 °/min drift, before the sensor fault
+  (issue 2) began.
 
 ## Issues found
 
@@ -119,30 +123,47 @@ timestamp (`t_thigh_us`), which confirms they are copies of the same measurement
 and drift are identical to within 0.0002°. For movement data it would matter:
 repeated values, dropped samples, and row times up to ~20 ms off.
 
+**Measured cause.** The diagnostic build timed each ~23 ms cycle: ~10.7 ms
+reading the thigh IMU and ~11.7 ms printing the data line as ~36 separate
+prints. Sending a longer line as one write took ~0.7 ms.
+
 **Status.**
 - A first firmware fix to the output timer had no effect, which showed the
   problem is inside each output cycle.
-- A diagnostic build is ready. It times the parts of that cycle; the suspects are
-  about 36 separate print calls per line and slow sensor reads.
-- Planned fixes:
-  - Speed up the output cycle.
-  - Write one CSV row per received sample, so duplicates can't happen.
+- **Fix made, awaiting a test run:** the central now builds each data line in
+  memory and sends it with one write, which should bring the cycle to ~11–12 ms
+  and the rate to a true 50 Hz.
+- Still planned: write one CSV row per received sample, so duplicates can't happen.
 
-### 2. The ruler-side node's sensor can go bad
+### 2. The ruler-side node's sensor fails after ~20 minutes
 
-In a separate 1-minute recording where nothing moved at all (the central board had
-been running ~26 minutes since its last reset, from its `t_thigh_us` clock):
+Seen in two recordings with the boards untouched: a 1-minute no-motion
+recording, and a ~40-minute unattended run with the diagnostic build (both
+boards on USB power). The diagnostic run shows the sequence:
 
-- **The ruler node's reported orientation spun** by a median of ~27° between
-  consecutive samples, up to ~2000 °/s. The desk node stayed within 0.05°.
-- **The ruler node stalled 26 times**, each for ~0.2 s. That matches its built-in
-  sensor-restart routine firing repeatedly without fixing the problem.
-- **Valid samples fell to 93 %.** The rest were gaps filled with the previous value.
+| Board uptime | What the ruler node reported |
+|---|---|
+| 0–20 min | Healthy: 100 % valid, jitter 0.016°, drift −0.001 °/min |
+| 20.4 min | Individual sensor reads start **hanging for ~190 ms** and returning garbage (accelerometer up to 4.4 g, two axes stuck at −1 count) |
+| 21–26 min | Hung reads more frequent; gyro reads 1500–2400 °/s while still, so the orientation spins and the angle swings by tens of degrees |
+| 26.3 min | The sensor **stops producing data**. Each restart attempt reports success but takes ~1.9 s, and no sample ever follows |
+| 26–41 min | Board still running and talking to the central; its sensor silent |
 
-This is consistent with the drop in data quality seen after ~15 minutes of
-collection. It isn't caused by calibration or by the sample-rate issue. The
-diagnostic build reports the ruler node's sensor health once a second, to show
-when and how it fails.
+- **Not the link:** 0 checksum failures and 0 corrupted bytes for the whole run,
+  and the ruler board's health reports kept arriving.
+- **Not a board reset or power loss:** its uptime counter never restarted.
+- **Not calibration:** the fault is between the ruler board's processor and its
+  own sensor. The desk node's sensor stayed perfect for all 41 minutes.
+
+The likely cause is a hardware problem on that board (the sensor, its
+connections, or heat), but a firmware cause isn't ruled out yet. Swapping the
+two boards' roles will tell: if the fault stays with the same physical board,
+it's that board.
+
+**Firmware protection (made, awaiting a test run):** the ruler board now
+rejects implausible samples and sends them as gaps instead of wrong angles,
+resets its filter after each sensor restart, and reboots itself if its sensor
+produces nothing usable for 5 s.
 
 ### 3. Only the ruler node was tested
 
@@ -158,7 +179,8 @@ future test should tilt both nodes during calibration.
   angles were at most 6.4°, too small to reveal scale errors.
 - **Jitter is limited by the log format.** Angles are logged to 0.01°, so the
   ~0.01° jitter is an upper bound; the true sensor noise is probably lower.
-- **5-minute holds.** Drift over longer periods isn't measured.
+- **Mostly 5-minute holds.** One clean 18-minute stretch exists; longer drift
+  isn't measured yet because of the sensor fault.
 - **Rig vs. sensor.** Where the rig moved (session 2), its movement can't yet be
   separated from sensor drift. The GUI now logs the raw accelerometer, which
   will allow that.
@@ -167,10 +189,12 @@ future test should tilt both nodes during calibration.
 
 | Step | Status |
 |---|---|
-| Run the diagnostic build past the ~15 min mark | Ready: flash both boards |
+| Run the diagnostic build past the ~15 min mark | Done (~40 min run) |
 | Log the raw accelerometer in the CSV | Done (`knee_gui.py`) |
-| Fix the sample rate (faster output cycle; one row per received sample) | After diagnostics |
-| Investigate and fix the ruler-node sensor fault | After diagnostics |
+| Speed up the output cycle (one write per line) | Done: flash both boards and test |
+| Guard the ruler node against a failing sensor | Done: flash both boards and test |
+| Swap the boards' roles to see if the fault follows the hardware | Next test |
+| Write one CSV row per received sample | To do |
 | Log angles with more decimal places | To do |
 | Stiffen the raised rig (clamp the ruler, fix both nodes rigidly) | To do |
 | Tilt both nodes during calibration | Next test |
