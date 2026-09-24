@@ -76,9 +76,11 @@ What it adds over the CLI:
 - **Port scan** — probes each serial port for valid `D` lines and picks the
   central automatically. (Only the central is on USB; a dead peripheral link shows up
   as a low shank-valid %, not a second port.)
-- **Consistent 50 Hz** — the fixed 50 Hz device stream is resampled onto a
-  fixed 20 ms grid, so both the CSV and the plots are a clean 50 Hz record
-  regardless of source jitter.
+- **One row per sample** — every data line from the central becomes exactly one
+  CSV row and plot point: nothing repeated, nothing skipped. `t_session_s` comes
+  from the board's own clock (true measurement timing, ~20 ms apart at 50 Hz);
+  `t_wall_iso` is when the PC received the line. (Earlier versions wrote rows on a
+  PC-side 20 ms timer, which repeated ~20 % of samples and skipped others.)
 - **Obvious calibration** — a colour-coded banner drives the phases with a live
   countdown: amber **ZEROING** (hold straight & still) → amber **SWEEP** (bend
   knee + hip, with a live shank-tilt readout) → green **RUNNING**.
