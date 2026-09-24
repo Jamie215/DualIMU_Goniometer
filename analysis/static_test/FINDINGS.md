@@ -7,6 +7,8 @@
 - **Session 1 (§1–6):** 2026-09-23, flat desk. `knee_static_1.csv` – `knee_static_3.csv` (≈5 min each)
 - **Session 2 (§7):** 2026-09-24, raised rig (desk node ~1 cm higher than the ruler node, ~5 cm apart), central
   emit-timer fix flashed. `knee_static_4.csv` – `knee_static_6.csv` (≈5–5.5 min each)
+- **Long runs and sensor fault (§8–10):** 2026-09-24, diagnostic builds, `knee_long_test*.csv` + `knee_diag_*.log`
+- **Angle rig (§11):** 2026-09-24, 45° and 90° preliminary check
 
 ## Headline
 
@@ -449,4 +451,76 @@ print step is what overruns the budget.
   and never reach the filter; the Mahony integral resets on every re-init; the board
   reboots if no good sample arrives for 5 s. New PDIAG fields: `bad_samples`,
   `read_max_ms`.
+
+## 9. Long run 2: one-write firmware (2026-09-24)
+
+`knee_long_test2.csv` + `knee_diag_20260924_135333.log`. Central with the one-write
+data line; peripheral with the sensor-fault guard.
+
+- **Rate fix confirmed on the board:** `emit_avg_us` 19,997 (was ~23,300);
+  `print_avg_us` ~1,750 with shank data (was ~11,700). The CSV still had 20 %
+  duplicates and ~40 unique samples/s, because the GUI wrote rows on its own
+  (uneven) 20 ms timer. Fixed next, in the GUI (§10).
+- **Angle creep was physical.** The angle rose ~5° over the first 3 min and fell
+  0.5° from minute 13–23. The shank node's raw accelerometer tilted by the same
+  amounts (7.7°, then 0.57°); the desk node moved ≤ 0.13°.
+- **Sensor failure, abrupt this time:** at 24.8 min of peripheral uptime, one read
+  hung 189 ms (2 samples rejected by the guard; the angle stayed at 6.6–6.9°), then
+  no data. Re-inits took ~1.93 s each. After 5 s without a good sample the
+  **peripheral rebooted itself** (`up_ms` restarted), but its sensor was still dead
+  afterwards. It then went quiet with its LED dark, consistent with `IMU.begin()`
+  hanging at boot. A processor reboot doesn't power-cycle the sensor, so this
+  points to the sensor (or its supply) being stuck.
+
+## 10. Board-swap run and one-row-per-sample GUI (2026-09-24)
+
+`knee_long_test3.csv` + `knee_diag_20260924_143103.log`. Firmware roles swapped
+between the two boards; cables, USB ports and positions unchanged. GUI writing one
+row per received sample.
+
+**GUI fix confirmed:** 49.8 rows/s, **0 duplicate `t_thigh_us`**, median row step
+19.94 ms, `t_session_s` from the board clock.
+
+**The fault followed the physical board.** The original shank board, now running
+the central firmware:
+
+| Uptime | Central (original shank board) |
+|---|---|
+| 6.5 min | `imu_miss` starts: no fresh sample at ~40 % of emit ticks (630–1300/min). Never seen on the other board as central (0 misses in 67 min over two runs) |
+| 37.8 min | Hung reads (`imu_max_us` ~197,000) with garbage accel (4.15 g) |
+| 47.3 min | Every read hangs ~204 ms: emit period 207 ms (~5 Hz), no valid IMU samples, UART RX backlog at 256/256 bytes, `cs_fail` ~5/s (overflow) |
+
+The original desk board, now running the peripheral firmware, was clean for the
+whole ~65 min: 0 `bad_samples`, `read_max_ms` 8, accel 0.98–1.02 g, no re-inits.
+The angle came from it (it tilted in calibration), so the angle stayed at 0.23°,
+SD 0.018°, drift −0.001 °/min over 57 min, with 99.97 % valid. **The central's
+failure was invisible in the angle and the valid %**; it only showed in CDIAG and
+`thigh_ax..az`.
+
+## 11. Preliminary angle check: 45° and 90° rigs (2026-09-24)
+
+`knee_45_mount.csv`, `knee_90_mount.csv`, `knee_diag_20260924_154549.log`. A two-segment
+rig: the thigh node on the flat upper segment, the shank node on the lower segment set
+at 45° or 90°. Zeroed flat, swept (shank node only), then placed on the rig. Both
+boards healthy (0 `imu_miss`, 0 `bad_samples`, 50 Hz, 0 `cs_fail`).
+
+| Rig | Steady window | GUI angle | SD | Shank raw-accel sagittal | Shank raw-accel total tilt | Thigh node tilt (along / across bend plane*) |
+|---|---|---|---|---|---|---|
+| 45° | 34–43 s | −45.01° | 0.034° | 45.20° | 45.62° | 2.72° (1.94° / 1.91°) |
+| 90° | 20–39 s | −89.05° | 0.093° | 88.98° | 88.99° | 4.54° (3.37° / 3.04°) |
+
+\*Assumes both boards were mounted the same way round.
+
+- The shank node's filtered tilt matches its filter-free accelerometer tilt within
+  ~0.2°, so calibration and filter are consistent at 45° and 90°.
+- The 45° reading crept −43.4° → −45.0° over ~20 s after placement. The shank
+  accelerometer followed (43.7° → 45.2°) and the thigh node tilted at the same time
+  (1.0° → 2.75°): physical settling, not drift.
+- The thigh node shifted 2.7–4.5° (likely cable tension) and is ignored by the angle
+  (it didn't tilt in calibration). If its segment stayed flat, the readings stand;
+  if the segment moved in the bending plane, the angle between segments could be
+  ~2–3° larger (≈ 47.4° / 92.4°). Its similar across-plane tilt suggests the board
+  shifted on the segment, but this can't be confirmed.
+- One placement per rig, and the rig's own angle tolerance is unknown. Treat these
+  as a preliminary inspection, not an accuracy result.
 
