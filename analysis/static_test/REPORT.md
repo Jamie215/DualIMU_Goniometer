@@ -3,35 +3,22 @@
 **Test dates:** 2026-09-23 and 2026-09-24 · **Hardware:** 2 × Arduino Nano 33 BLE Rev2 (BMI270), wired UART link · **Logger:** `knee_gui.py`
 
 > Detailed analysis, per-run tables and method notes are in [FINDINGS.md](FINDINGS.md).
-> This report summarises what the tests showed.
 
-## Summary
+## Purpose of this document
 
-With nothing moving, the goniometer's reading stays still. Jitter is about
-**0.01–0.02°**. On a stable setup the reading changed by **less than 0.1° over
-5 minutes, and by about 0.06° over a full hour** (drift −0.001 °/min).
+This document records the static testing of the dual-IMU goniometer prototype:
+what was tested, how, what the results showed, which problems turned up along the
+way and how they were addressed. It closes with conclusions and recommended next
+steps for anyone continuing the work.
 
-A preliminary check on 45° and 90° rigs read **45.0° and 89.0°**. That's within
-1° of nominal, but the setup couldn't give a rigorous accuracy figure (see below).
-
-Testing also found three problems:
-
-1. **The sample rate was ~40 Hz, not 50 Hz,** and ~20 % of CSV rows were
-   duplicates. **Fixed and confirmed:** true 50 Hz, 0 duplicate rows. The static
-   results were unaffected.
-2. **One board's sensor fails after 20–47 minutes of running.** The fault followed
-   that physical board when the boards swapped roles; the other board ran a full
-   hour without a single bad reading. **Action: replace that board.**
-3. **Only one node was exercised** by these tests, because of how calibration
-   works when one node never tilts.
-
-## Purpose
+## What we are testing
 
 - **Stability:** if nothing moves, does the measured angle also stay unchanged?
+  This covers short-term jitter, slow drift over minutes to an hour, and data
+  quality over long sessions.
 - **Preliminary angle check:** do fixed 45° and 90° rigs read close to nominal?
-
-The rigs weren't precise enough for a formal accuracy figure, so that part is a
-preliminary inspection only.
+  The rigs weren't precise enough for a formal accuracy figure, so this part is a
+  preliminary inspection only.
 
 ## Setup
 
@@ -170,81 +157,110 @@ apart.
 **Effect on these results: none.** With duplicates removed, every run's mean, SD
 and drift are identical to within 0.0002°. The fix matters for movement data.
 
-### 2. One board's sensor fails after 20–47 minutes — traced to that board
+### 2. Poor data quality in long sessions: traced to one faulty board
 
-**What happens.** On that board, individual sensor reads start **hanging for
-~190–200 ms** and returning garbage while the board sits still: accelerometer up to
-4.4 g, gyro up to 2400 °/s. A few minutes later the sensor **stops producing data
-entirely**. Restarting the sensor, or rebooting the board, doesn't bring it back.
+In long sessions, data quality from one node would break down after 20–47 minutes.
+The evidence points to a hardware fault on one of the two Arduino boards as the
+most likely cause.
 
-| Recording | That board's role | Sensor trouble starts | Sensor dead |
+**What happened.** On that board, individual sensor reads started **hanging for
+~190–200 ms** and returning garbage while the board sat still: accelerometer up to
+4.4 g, gyro up to 2400 °/s. This made the reported orientation spin and the angle
+swing by tens of degrees. A few minutes later the sensor **stopped producing data
+entirely**. Restarting the sensor, or rebooting the board, didn't bring it back.
+
+| Recording | That board's role | Sensor trouble started | Sensor stopped |
 |---|---|---|---|
 | No-motion test | Shank (ruler) | before 26 min | ~26 min |
 | Long run 1 | Shank | 20.4 min | 26.3 min |
 | Long run 2 | Shank | 24.8 min (abrupt) | 24.8 min; still dead after the automatic reboot |
 | Long run 3, **roles swapped** | Thigh (central) | 6.5 min (missed updates); 37.8 min (hung reads) | 47.3 min |
 
-In the swapped run, **the other board ran the shank role for over an hour with 0
-bad readings.** Across all runs, the other board never had a sensor problem in
-either role.
+**How it was traced.**
+- **Swapping the boards' firmware roles moved the fault with the board.** In long
+  run 3, the board that had been failing as the shank node failed again as the
+  thigh node. The other board ran the shank role for over an hour with 0 bad
+  readings. Across all runs, the other board never had a sensor problem in either
+  role.
+- **Ruled out:**
+  - **The link:** no checksum failures before the fault in any run (apart from 2
+    at start-up in one).
+  - **Power loss or a board reset:** its uptime counter never restarted by itself.
+  - **Calibration:** unrelated to how or whether the node moved.
+  - **The firmware:** both firmware roles failed on this board, and neither failed
+    on the other.
+- Its cable, USB port and position stayed with it during the swap, so those
+  weren't separately excluded. A faulty sensor chip or joint on the board itself
+  remains the most likely explanation.
 
-**Ruled out:**
-- **The link:** no checksum failures before the fault in any run (apart from 2
-  at start-up in one).
-- **Power loss or a board reset:** its uptime counter never restarted by itself.
-- **Calibration:** unrelated to how or whether the node moved.
-- **The firmware:** both firmware roles failed on this board, and neither failed
-  on the other.
-
-**Conclusion.** The fault follows that physical board. Its cable, USB port and
-position also stayed with it, so a one-off test with the other board's cable and
-port would exclude those. The board itself is the most likely cause: a faulty
-sensor chip, a weak joint, or heat. **Replace it.**
-
-**Firmware protection (in place).** The shank board now rejects implausible
-samples and sends them as gaps instead of wrong angles, resets its filter after
-each sensor restart, and reboots itself if its sensor produces nothing usable for
-5 s. In long run 2 the guard caught the bad readings and the reboot fired, but
-the sensor stayed dead, which is why it points to hardware.
-
-### 3. Only one node was exercised, and validity can hide a failure
-
-The angle is the difference between the two nodes' tilts, but the software only
-uses a node's tilt if it moved at least 5° during the calibration sweep. The desk
-node never did, so it was treated as fixed and the angle came from the shank node
-alone.
-
-This also means **"valid %" only reflects the shank node's data.** In the swapped
-run, the failing board was the reference node: validity stayed ~100 % and the
-angle stayed flat while its sensor died. The failure only showed in the
-diagnostic log and the CSV's `thigh_ax..az` columns.
+**Mitigation added along the way.** The shank firmware now rejects implausible
+sensor samples and sends them as gaps instead of wrong angles. It also resets its
+filter after each sensor restart, and reboots the board if the sensor produces
+nothing usable for 5 s. In long run 2 the guard caught the bad readings and the
+reboot fired, but the sensor stayed dead. That's further evidence the fault was in
+the hardware.
 
 ## Limitations
 
+- **Only one node was exercised in the angle.** The angle is the difference
+  between the two nodes' tilts, but the software only uses a node's tilt if it
+  moved at least 5° during the calibration sweep. In every test only the shank
+  node was swept, so the thigh node was treated as fixed and the angle came from
+  the shank node alone. The thigh node's own data shows it was just as stable, but
+  its contribution to the angle wasn't tested.
+- **"Valid %" only reflects the shank node's data.** A failure of the thigh node
+  doesn't show up in the valid % or, with the calibration above, in the angle. In
+  long run 3 the failing board was the thigh node, and validity stayed ~100 % while
+  its sensor died. It only showed in the diagnostic log and the CSV's
+  `thigh_ax..az` columns.
 - **Accuracy is preliminary only.** The 45°/90° check was one placement each, and
-  the reference node shifted during placement.
+  the reference node shifted 2.7–4.5° during placement.
 - **Jitter is limited by the log format.** Angles are logged to 0.01°, so the
   ~0.01° jitter is an upper bound; the true sensor noise is probably lower.
 - **Rig vs. sensor.** Where the rig moved (session 2), its movement couldn't be
-  separated from sensor drift at the time. The GUI now logs the raw
-  accelerometer, which does that; it confirmed a later creep was physical.
-- **One node per test.** The reference node's behaviour within the angle
-  calculation hasn't been tested.
+  separated from sensor drift at the time. The GUI now logs the raw accelerometer,
+  which does that; it confirmed a later creep was physical.
 
-## Next steps
+## Conclusions and next steps
 
-| Step | Status |
-|---|---|
-| Fix the sample rate (one write per line; one CSV row per sample) | Done and confirmed |
-| Log the raw accelerometer in the CSV | Done |
-| Guard the shank node against a failing sensor | Done |
-| Board-swap test to locate the sensor fault | Done: fault follows one board |
-| Replace the faulty board (optionally, first test it on the other cable and port) | To do |
-| One-hour static run on two healthy boards as the clean baseline | After replacement |
-| Tilt both nodes during calibration, so the angle uses both | Next test |
-| Keep the reference node still (tape the board and its cable down) | Next test |
-| Repeat 0°/45°/90° placements 3–5 times each | If a steadier rig is available |
-| Log angles with more decimal places | To do |
+**What was tested.** Six ~5-minute static holds on two setups (a flat desk and a
+raised rig), three long unattended sessions of 25–65 minutes with diagnostic
+firmware, a board-swap session, and a preliminary check on 45° and 90° rigs.
+
+**What the tests showed.**
+- On healthy hardware the angle is very stable at rest:
+  - Jitter is about 0.01–0.02°.
+  - Drift was undetectable over 5 minutes and −0.001 °/min over a clean
+    57-minute hold (about 0.06° in total).
+  - Heading drift in the sensors didn't leak into the angle.
+- Calibration worked even with a tilted zero pose and a short, reversed sweep.
+- At the 45° and 90° rigs the shank node read 45.0° and 89.0°, and its
+  filter-free accelerometer agreed within ~0.2°. This is encouraging, but only a
+  preliminary result.
+
+**What was found and addressed.**
+- **Sample rate:** the system ran at ~40 Hz instead of 50 Hz, with ~20 % duplicate
+  CSV rows. Two fixes brought it to a true 50 Hz with 0 duplicates:
+  - The central board now sends each line in one write.
+  - The GUI now writes one row per received sample, timed by the board's clock.
+- **Long-session data loss:** traced to a faulty sensor on one Arduino board.
+  Firmware now limits the damage by turning bad samples into gaps and rebooting
+  the node, but it can't repair the hardware.
+- **Diagnostics added:**
+  - Once-a-second health reports from both boards, saved to a log.
+  - Raw accelerometer columns in the CSV, which separate physical movement from
+    filter behaviour.
+
+**Recommended next steps.** Anyone continuing this work should first replace the
+faulty board and repeat a one-hour static run on two healthy boards, to get a
+clean baseline. From there:
+- Sweep **both** nodes during calibration so the angle uses both sensors.
+- Fix the reference node and its cable firmly so it can't shift.
+- If a more precise rig is available, repeat the 0°, 45° and 90° placements
+  several times each to turn the angle check into an accuracy figure.
+- Log angles to more decimal places to measure the true noise floor.
+- Move on to dynamic (movement) testing, now that the sample rate and CSV timing
+  are sound.
 
 ## Files
 
@@ -252,5 +268,5 @@ diagnostic log and the CSV's `thigh_ax..az` columns.
 |---|---|
 | [FINDINGS.md](FINDINGS.md) | Full analysis and per-run detail |
 | `plot_report.py` | Recreates the figure above (needs the six CSVs in this folder) |
-| `Static_Stability_Test_Report.docx` | Word version of this report (rebuild with `build_report_docx.js`) |
+| `Static_Stability_Test_Report.docx` | Word version of this report, generated from this file by `build_report_docx.js` |
 | `stats.py`, `calibration.py`, `plot.py`, `plot_session2.py` | Detailed statistics and plots |
