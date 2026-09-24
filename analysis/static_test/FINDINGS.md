@@ -2,7 +2,7 @@
 
 **Logger:** `knee_gui.py` (CSV session output)
 - **Session 1 (§1–6):** 2026-09-23, flat desk. `knee_static_1.csv` – `knee_static_3.csv` (≈5 min each)
-- **Session 2 (§7):** 2026-09-24, raised rig with a height difference between the nodes, central
+- **Session 2 (§7):** 2026-09-24, raised rig (desk node ~1 cm higher than the ruler node), central
   emit-timer fix flashed. `knee_static_4.csv` – `knee_static_6.csv` (≈5–5.5 min each)
 
 ## Headline
@@ -274,14 +274,21 @@ Numbers in §5 are from session 1 (flat desk) unless marked. See §7 for session
 ## 7. Session 2 (runs 4–6): raised rig
 
 ### 7.1 What changed
-The nodes were mounted on a different rig with a height difference between them,
-and the central firmware had the emit-timer change (§4.6). Everything else, including
-the calibration procedure and 5 min holds, was the same.
+**Purpose.** Like session 1, this was a stability test, not an accuracy test: with
+nothing moving, does the reading also stay unchanged?
+
+**Setup.** The nodes were mounted on a different rig. The desk (thigh) node sat
+about 1 cm higher than the ruler (shank) node, with the two roughly in a straight
+line. Small tilts may have come in during calibration or from the wires. The
+central firmware had the emit-timer change (§4.6). Everything else, including the
+calibration procedure and 5 min holds, was the same.
 
 A constant height or tilt difference doesn't affect the angle by itself: each node's
 tilt is measured against gravity *relative to its own zeroing pose*, so a fixed
-mounting tilt is captured at zeroing and cancels. What the rig did change is the zero
-pose and how rigid and repeatable the setup is:
+mounting tilt is captured at zeroing and cancels. The measured zero-pose tilt of the
+ruler node (4–15°, below) is larger than a 1 cm step alone would give over a ruler's
+length (~2° over 30 cm). That fits the wires or handling tilting the board itself. What
+the rig did change is the zero pose and how rigid and repeatable the setup is:
 
 | | Session 1 (runs 1–3) | Session 2 (runs 4–6) |
 |---|---|---|
@@ -310,6 +317,23 @@ and the knee angle's change from its value at 20 s.*
 
 ### 7.2 What session 2 shows
 
+**The stability question: with no movement, did the angle stay unchanged?**
+
+| Run | Total change over the hold (first 10 s → last 10 s) | Range of 5 s averages | Raw min–max |
+|---|---|---|---|
+| 1 | −0.06° | 0.09° | 0.18° |
+| 2 | −0.03° | 0.04° | 0.07° |
+| 3 | −0.01° | 0.05° | 0.09° |
+| 4 | +0.16° | 0.17° | 0.20° |
+| 5 | +0.49° (two steps) | 0.50° | 0.52° |
+| 6 | +0.11° | 0.12° | 0.14° |
+
+Over each ~5 min hold the reading changed by at most 0.5° (session 2) and 0.06°
+(session 1), with sample-to-sample jitter around 0.01°. Much of session 2's change
+matches movement of the rig itself (item 6 below). Offsets from zero (+6.4°, −1.3°,
+−0.8°) come from where the ruler came to rest after the calibration sweep, not from
+change during the hold.
+
 1. **Short-term noise is unchanged across rigs and a power cycle.**
 
    | τ | Session 1 | Session 2 |
@@ -326,7 +350,8 @@ and the knee angle's change from its value at 20 s.*
    are ~36 separate blocking `Serial.print` calls per line and slow I²C reads of the IMU.
 3. **Link reliability repeated.** 100 % valid samples, no dropouts. Shank packets one
    cycle late (~22 ms) fell from 0.5–2.4 % to 0.03–0.15 %.
-4. **Static hold at a non-zero, non-level pose.** The zero pose was 4–15° off level
+4. **Static hold at a non-zero, non-level pose.** Although accuracy wasn't the aim,
+   this doubles as an off-angle stability check. The zero pose was 4–15° off level
    and the ruler came to rest 0.8–6.4° from zero. Calibration still worked with a
    shorter, reversed sweep, and at rest the reading was as steady (short-term) as at
    0°. So the method doesn't need a level or perfectly aligned zero pose, and stays
