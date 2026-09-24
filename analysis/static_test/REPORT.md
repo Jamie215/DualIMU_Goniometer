@@ -183,4 +183,5 @@ future test should tilt both nodes during calibration.
 |---|---|
 | [FINDINGS.md](FINDINGS.md) | Full analysis and per-run detail |
 | `plot_report.py` | Recreates the figure above (needs the six CSVs in this folder) |
+| `Static_Stability_Test_Report.docx` | Word version of this report (rebuild with `build_report_docx.js`) |
 | `stats.py`, `calibration.py`, `plot.py`, `plot_session2.py` | Detailed statistics and plots |
