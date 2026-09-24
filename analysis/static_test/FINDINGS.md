@@ -18,6 +18,10 @@ reliability at a non-level, non-zero resting pose. Its drift and offsets are
 dominated by the rig moving, and the central emit-timer change did not fix the
 ~23 ms sample period.
 
+The configured 50 Hz was effectively ~40 Hz in the logged data (~43.5 Hz from the
+board, ~20 % duplicate CSV rows). This doesn't change any static result (§5), but it
+must be fixed before dynamic testing.
+
 ## 1. Setup
 
 - **Thigh node** taped to the desk (never moves).
@@ -251,6 +255,17 @@ statistics on calibration repeatability.
 | Zero-pose variation between calibrations (ruler placement) | 0.33–0.62° |
 | Data validity | 100 %, no dropouts |
 | Short-term noise, raised rig (session 2, Allan dev. τ = 1 s) | 0.005–0.007° (same as session 1) |
+| Sample rate: configured / produced by the board / unique samples logged | 50 Hz / ~43.5 Hz / ~40.5 Hz (both sessions) |
+| CSV rows that repeat the previous sample | 19–20 % (50 rows/s written on a fixed PC timer) |
+
+**Sample rate.** The system was configured for 50 Hz, but the central board produced
+~43.5 Hz and ~40.5 Hz of unique samples were logged; the CSV's 50 Hz rows included
+~20 % duplicates (§4.6). The static stability results are unaffected: with duplicates
+removed, every run's mean, SD and drift are identical to within 0.0002° / 0.0001 °/min,
+and the Allan deviation was already computed on unique samples only. The rate shortfall
+does matter for dynamic tests (repeated values, dropped samples, row timestamps up to
+~20 ms off) and is being addressed. Don't carry "still valid" over to motion data until
+it's fixed.
 
 ## 6. Suggested next tests
 
