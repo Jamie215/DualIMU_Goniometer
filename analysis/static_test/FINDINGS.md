@@ -1,7 +1,7 @@
 # Static stability test — findings
 
-> A cleaned-up summary of these results is in [REPORT.md](REPORT.md). This file is the
-> detailed working record.
+> The cleaned-up report is `Static_Stability_Test_Report.docx` in this folder. This file is
+> the detailed working record.
 
 **Logger:** `knee_gui.py` (CSV session output)
 - **Session 1 (§1–6):** 2026-09-23, flat desk. `knee_static_1.csv` – `knee_static_3.csv` (≈5 min each)

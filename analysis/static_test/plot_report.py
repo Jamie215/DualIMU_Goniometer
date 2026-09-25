@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summary figure for REPORT.md: change in knee angle during each static hold.
+"""Figure 1 of Static_Stability_Test_Report.docx: change in knee angle during each static hold.
 
 Place knee_static_1.csv ... knee_static_6.csv next to this script and run it.
 Each trace is the 5 s rolling mean of the angle, relative to the mean of the
