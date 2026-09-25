@@ -2,6 +2,8 @@
 """Plots for the preliminary 45°/90° angle-rig check.
 
 Place knee_45_mount.csv and knee_90_mount.csv next to this script and run it.
+Writes angle_rig_plots.png (reported angle vs accelerometer) and
+angle_rig_nodes.png (thigh node vs shank node tilt).
 Top row: the whole recording (zeroing, calibration sweep, placement on the rig,
 hold). Bottom row: the steady part of the hold, zoomed around the nominal angle.
 Each panel shows the reported knee angle and, as a filter-free cross-check, the
@@ -93,3 +95,62 @@ axes[1, 0].set_ylabel('Angle (°)')
 fig.tight_layout()
 fig.savefig('angle_rig_plots.png', dpi=130, facecolor=SURF)
 print('wrote angle_rig_plots.png')
+
+
+# --------------------------------------------------------------------------- #
+# Second figure: thigh node vs shank node tilt. The software treats the thigh
+# node as fixed here (it didn't tilt during calibration, so incl_thigh is 0), so
+# each node's tilt is taken from its own raw accelerometer, as the angle between
+# gravity now and gravity during the zeroing hold (a magnitude: it includes any
+# tilt across the bending plane as well as along it).
+# --------------------------------------------------------------------------- #
+SHANK, THIGH = '#2a78d6', '#1baf7a'           # categorical slots 1 and 3
+
+
+def tilt_from_zero(d, cols):
+    z = unit(d[d.phase == 'zeroing'][cols].dropna().mean().values)
+    a = d[cols].values
+    n = np.linalg.norm(a, axis=1, keepdims=True)
+    cosang = np.clip((a / n) @ z, -1, 1)
+    return np.degrees(np.arccos(cosang))
+
+
+fig, axes = plt.subplots(2, 2, figsize=(11, 7), facecolor=SURF,
+                         gridspec_kw={'height_ratios': [1.1, 1]})
+for col, (path, nominal, (t0, t1)) in enumerate(RIGS):
+    d = pd.read_csv(path)
+    d['shank_tilt'] = tilt_from_zero(d, ['shank_ax', 'shank_ay', 'shank_az'])
+    d['thigh_tilt'] = tilt_from_zero(d, ['thigh_ax', 'thigh_ay', 'thigh_az'])
+    steady = d[(d.t_session_s >= t0) & (d.t_session_s < t1)]
+    top, bot = axes[0, col], axes[1, col]
+    for ax in (top, bot):
+        ax.set_facecolor(SURF)
+        ax.axvspan(t0, t1, color=BAND, zorder=0)
+        ax.axvspan(0, 8, color=BAND, alpha=0.5, zorder=0)
+        ax.grid(axis='y', color=GRID, lw=0.8)
+        for side in ('top', 'right'):
+            ax.spines[side].set_visible(False)
+        ax.set_xlim(0, d.t_session_s.max())
+        ax.set_xlabel('Time (s)')
+    # top: both nodes on one scale
+    top.plot(d.t_session_s, d.shank_tilt, color=SHANK, lw=1.8, label='Shank node (angled segment)')
+    top.plot(d.t_session_s, d.thigh_tilt, color=THIGH, lw=1.8, label='Thigh node (flat segment)')
+    top.axhline(nominal, color=INK2, lw=1, ls='--')
+    top.text(top.get_xlim()[1], nominal, ' nominal', va='center', ha='left', color=INK2, fontsize=8, clip_on=False)
+    top.text(4, nominal + 6, 'zero +\nsweep', ha='center', va='bottom', color=INK2, fontsize=8)
+    top.text((t0 + t1) / 2, nominal + 6, 'steady\nwindow', ha='center', va='bottom', color=INK2, fontsize=8)
+    top.set_ylim(-5, nominal + 22)
+    top.set_title(f'{nominal}° rig · tilt of each node from its zero pose', loc='left', fontsize=11)
+    top.legend(frameon=False, loc='center right', fontsize=9)
+    # bottom: thigh node zoomed
+    bot.plot(d.t_session_s, d.thigh_tilt, color=THIGH, lw=1.8)
+    bot.set_ylim(0, 6)
+    bot.set_title(f'{nominal}° rig · thigh node only (zoomed)', loc='left', fontsize=11)
+    bot.text(0.02, 0.95, f'steady window: shank {steady.shank_tilt.mean():.2f}°, thigh {steady.thigh_tilt.mean():.2f}°',
+             transform=bot.transAxes, va='top', color=INK2, fontsize=9,
+             bbox=dict(facecolor=SURF, edgecolor='none', pad=2))
+axes[0, 0].set_ylabel('Tilt from zero pose (°)')
+axes[1, 0].set_ylabel('Tilt from zero pose (°)')
+fig.tight_layout()
+fig.savefig('angle_rig_nodes.png', dpi=130, facecolor=SURF)
+print('wrote angle_rig_nodes.png')
