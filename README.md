@@ -76,9 +76,11 @@ What it adds over the CLI:
 - **Port scan** — probes each serial port for valid `D` lines and picks the
   central automatically. (Only the central is on USB; a dead peripheral link shows up
   as a low shank-valid %, not a second port.)
-- **Consistent 50 Hz** — the fixed 50 Hz device stream is resampled onto a
-  fixed 20 ms grid, so both the CSV and the plots are a clean 50 Hz record
-  regardless of source jitter.
+- **One row per sample** — every data line from the central becomes exactly one
+  CSV row and plot point: nothing repeated, nothing skipped. `t_session_s` comes
+  from the board's own clock (true measurement timing, ~20 ms apart at 50 Hz);
+  `t_wall_iso` is when the PC received the line. (Earlier versions wrote rows on a
+  PC-side 20 ms timer, which repeated ~20 % of samples and skipped others.)
 - **Obvious calibration** — a colour-coded banner drives the phases with a live
   countdown: amber **ZEROING** (hold straight & still) → amber **SWEEP** (bend
   knee + hip, with a live shank-tilt readout) → green **RUNNING**.
@@ -290,7 +292,12 @@ start the central calibrates + seeds fresh and forwards a **keepalive** to the p
 (over `Central TX -> Peripheral RX`); the peripheral calibrates and streams while the keepalive
 arrives and idles when it stops (port closed / central reset). Both boards emit at a
 fixed **50 Hz** (down from ~104 Hz) for generous link + USB timing margin; the peripheral
-also self-heals a bad low-rate sensor start by re-initializing (no manual reset). LED:
+also self-heals a bad low-rate sensor start by re-initializing (no manual reset).
+It also guards against a failing sensor: a sample with a hung read (> 50 ms),
+an impossible |accel| (< 0.25 g or > 4 g), or a rotation rate over 1000 °/s while
+the accelerometer reads ~1 g is never fed to the filter and is sent as the all-zero
+quaternion (a gap, not a wrong angle); every re-init resets the filter's integral
+term; and if no good sample arrives for 5 s the peripheral reboots itself. LED:
 central lit = collecting; peripheral fast blink = active, slow blink = idle, solid = sensor
 stalled, 3 flashes = boot.
 
@@ -312,6 +319,19 @@ When the freshest shank packet is stale/absent, `t_shank_recv_us` and the shank
 fields are `0`; the collector marks such samples invalid (and short gaps are
 forward-filled). `age_us` is the freshest shank packet's age (the CSV keeps the
 `rtt_us` column name for continuity — same units, a link-health number).
+
+**Diagnostics (`DIAG 1` in both sketches).** The peripheral also sends a once-a-second
+health frame on the same link (`0xAB` header, packed `PDiag` struct, XOR checksum;
+the struct must match in both files). The central relays it to the PC as
+`# PDIAG k=v ...` and adds its own `# CDIAG k=v ...` line (emit interval, IMU-read
+and print durations, parser counters, UART backlog, IMU health). `knee_gui.py`
+saves every `#` line to `knee_diag_<timestamp>.log`, and
+`analysis/diagnostics/parse_diag.py <log>` turns it into per-second CSVs and a
+per-minute summary. Flash **both** boards with a diagnostic build: an older central
+doesn't know the `0xAB` frame and can lose a shank packet a second resyncing.
+The GUI CSV also carries the raw accelerometer of each board
+(`thigh_ax..az`, `shank_ax..az`, g), which shows physical movement independent of
+the orientation filter.
 
 ---
 
@@ -433,4 +453,5 @@ calibration, wireless (BLE) links, and scaling to multiple nodes / joints — se
 central_imu/central_imu.ino   thigh board: 6-DOF filter, reads peripheral stream, streams to PC
 peripheral_imu/peripheral_imu.ino     shank board: 6-DOF filter, streams packets over UART
 knee_collector_uart.py      PC collector: calibration, angle math, CSV, --selftest
+analysis/diagnostics/parse_diag.py   diag log (# CDIAG / # PDIAG lines) -> CSVs + per-minute summary
 ```

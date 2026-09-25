@@ -9,10 +9,13 @@ angle math as the CLI, and adds what a testing session wants:
   * PORT SCAN         -- probe each serial port for valid 'D' lines and pick the
                          central automatically (only the central is on USB; the
                          peripheral is diagnosed *through* it via shank-valid %).
-  * CONSISTENT 50 Hz  -- the device streams at a fixed 50 Hz; it is resampled onto
-                         a fixed 20 ms grid, so both the CSV and the plot are a
-                         clean 50 Hz record regardless of source jitter or transient
-                         link stalls.
+  * ONE ROW PER SAMPLE -- every data line the central sends becomes exactly one
+                         CSV row (and one plot point): no duplicated or skipped
+                         samples. t_session_s is the board's own clock, so row
+                         timing is the true measurement timing; t_wall_iso is when
+                         the PC received the line. (An earlier version resampled
+                         onto a PC-side 20 ms timer, which on Windows repeated
+                         ~20 % of samples and skipped others.)
   * OBVIOUS CALIBRATION -- a big colour-coded banner drives the phases
                          (ZEROING -> SWEEP -> RUNNING) with a live countdown.
   * VISUALIZATION     -- knee angle (primary) plus the two segment inclinations
@@ -27,6 +30,10 @@ angle math as the CLI, and adds what a testing session wants:
                          dead peripheral link) using the shared diagnose_stream().
   * AUTO-SAVE         -- a timestamped CSV is opened at connect; "Save copy..."
                          relocates it. A crash never loses a session.
+  * DIAGNOSTICS LOG   -- '#' lines from the central (firmware banners and, with a
+                         diagnostic build, the once-a-second CDIAG / PDIAG health
+                         lines) are saved to knee_diag_<timestamp>.log for the
+                         whole connection, independent of collection sessions.
 
 Run:
   python knee_gui.py                 # launch the GUI (scan for ports)
@@ -37,6 +44,7 @@ Run:
 import argparse
 import csv
 import math
+import queue
 import random
 import threading
 import time
@@ -60,11 +68,10 @@ from knee_collector_uart import (
 # --------------------------------------------------------------------------- #
 # Tuning
 # --------------------------------------------------------------------------- #
-SAMPLE_HZ = 50                     # matches the firmware's fixed 50 Hz emit/stream baseline
-GRID_DT = 1.0 / SAMPLE_HZ          # fixed resample period (s) -> 20 ms
+SAMPLE_HZ = 50                     # the firmware's nominal emit rate (sizes the plot buffer)
 PLOT_WINDOW_SEC = 12               # rolling x-window shown in the plots
 PLOT_N = int(PLOT_WINDOW_SEC * SAMPLE_HZ) + 50
-STALE_SEC = 0.08                   # a source sample older than this = no fresh data
+SAMPLE_QUEUE_MAX = 3000            # ~60 s of samples buffered between reader and writer
 LINK_ERROR_SEC = 1.5               # no valid sample for this long -> red banner
 SIM_PORT = '[simulate]'            # sentinel port name for the synthetic source
 
@@ -215,9 +222,18 @@ def scan_ports(seconds=1.2):
 # --------------------------------------------------------------------------- #
 class Collector(threading.Thread):
     def __init__(self, port, simulate=False, baud=115200,
-                 cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS):
+                 cal_seconds=CAL_SECONDS, sweep_seconds=SWEEP_SECONDS,
+                 diag_prefix='knee_diag'):
         super().__init__(daemon=True)
         self.port = port
+        self.diag_prefix = diag_prefix
+        self._diag_f = None
+        # Every parsed data line is also queued, whole, for the Sampler, so the CSV
+        # gets exactly one row per line. Bounded: if the writer ever falls a
+        # minute behind, the oldest samples are dropped (and counted) instead of
+        # growing memory without limit.
+        self.samples = queue.Queue(maxsize=SAMPLE_QUEUE_MAX)
+        self.dropped = 0
         self.simulate = simulate
         self.baud = baud
         self.cal_seconds = cal_seconds
@@ -242,7 +258,7 @@ class Collector(threading.Thread):
             'valid': False,
             'angle': None, 'incl_t': None, 'incl_s': None,
             'thigh_q': None, 'shank_q': None, 't_us': 0, 'rtt': 0,
-            'recv_mono': 0.0,
+            'thigh_a': None, 'shank_a': None,
         }
 
     # -- commands (thread-safe) --
@@ -302,6 +318,13 @@ class Collector(threading.Thread):
 
             now = time.monotonic()
             phase = self._state['phase']
+
+            if raw.startswith('#'):
+                # Firmware banner or diagnostic line: log it, never parse it as data,
+                # and keep it out of last_raw so link-fault messages stay meaningful.
+                last_seen = now
+                self._log_diag(raw)
+                continue
 
             if raw:
                 last_seen = now
@@ -406,20 +429,52 @@ class Collector(threading.Thread):
                 angle=angle, incl_t=incl_t, incl_s=incl_s,
                 thigh_q=rec['thigh_q'] if rec else None,
                 shank_q=rec['shank_q'] if (rec and valid) else None,
+                thigh_a=rec['thigh_a'] if rec else None,
+                shank_a=rec['shank_a'] if (rec and valid) else None,
                 t_us=rec['t_thigh'] if rec else 0,
                 rtt=rec['rtt'] if rec else 0,
-                recv_mono=now if valid else self._state['recv_mono'],
             )
+            if rec is not None:
+                self._publish(dict(self._state, wall=datetime.now()))
 
         try:
             ser.close()
         except Exception:
             pass
+        if self._diag_f is not None:
+            self._diag_f.close()
+            self._diag_f = None
+
+    def _publish(self, sample):
+        """Queue one sample for the Sampler, dropping the oldest if it is full."""
+        try:
+            self.samples.put_nowait(sample)
+        except queue.Full:
+            try:
+                self.samples.get_nowait()
+                self.dropped += 1
+            except queue.Empty:
+                pass
+            self.samples.put_nowait(sample)
+
+    def _log_diag(self, line):
+        """Append a '#' line from the central, wall-clock stamped, to the diag log
+        (opened on the first line, so nothing is created for a silent port)."""
+        try:
+            if self._diag_f is None:
+                path = datetime.now().strftime(self.diag_prefix + "_%Y%m%d_%H%M%S.log")
+                self._diag_f = open(path, 'w')
+            self._diag_f.write(datetime.now().isoformat(timespec='milliseconds')
+                               + ' ' + line + '\n')
+            self._diag_f.flush()
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------- #
-# Sampler thread: snapshots the collector onto the fixed 50 Hz grid, applies the
-# fill/gap gate, appends to the plot ring buffer, and writes the CSV.
+# Sampler thread: takes each sample the collector queued (one per data line from
+# the central), applies the fill/gap gate, appends to the plot ring buffer, and
+# writes exactly one CSV row for it.
 #
 # Collection is SESSION-based and driven by the collector's phase: a session runs
 # for as long as the phase is zeroing/sweep/running. On the transition into a
@@ -433,7 +488,8 @@ class Sampler(threading.Thread):
               'thigh_qw', 'thigh_qx', 'thigh_qy', 'thigh_qz',
               'shank_qw', 'shank_qx', 'shank_qy', 'shank_qz',
               'knee_angle_deg', 'incl_thigh_deg', 'incl_shank_deg',
-              'status', 'phase', 'rtt_us', 'fill_mode']
+              'status', 'phase', 'rtt_us', 'fill_mode',
+              'thigh_ax', 'thigh_ay', 'thigh_az', 'shank_ax', 'shank_ay', 'shank_az']
     ACTIVE = ('zeroing', 'sweep', 'running')
 
     def __init__(self, collector, path_prefix='knee'):
@@ -497,66 +553,77 @@ class Sampler(threading.Thread):
         nan = float('nan')
         f = writer = None
         active = False
-        session_start = 0.0
-        next_t = time.monotonic()
+        t_prev_us = 0
+        t_acc_us = 0
         try:
             while not self._stop.is_set():
-                now = time.monotonic()
-                s = self.collector.snapshot()
+                try:
+                    s = self.collector.samples.get(timeout=0.2)
+                except queue.Empty:
+                    # No data (link down, or stopped): still end a session on Stop.
+                    if active and self.collector.snapshot()['phase'] not in self.ACTIVE:
+                        f.flush(); f.close(); f = writer = None
+                        active = False
+                    continue
                 phase = s['phase']
                 is_active = phase in self.ACTIVE
 
                 if is_active and not active:          # session begins
                     f, writer = self._open_session()
-                    session_start = now
+                    t_prev_us = s['t_us']
+                    t_acc_us = 0
                     active = True
                 elif not is_active and active:        # session ends (Stop -> idle)
                     f.flush(); f.close(); f = writer = None
                     active = False
+                if not active:
+                    continue
 
-                if active:
-                    t_rel = now - session_start
-                    with self._lock:
-                        if phase == 'running':
-                            fresh = s['valid'] and (now - s['recv_mono'] < STALE_SEC)
-                            out_angle, status = self.gate.process(
-                                fresh, s['angle'] if fresh else None)
-                            incl_t = s['incl_t'] if (fresh and s['incl_t'] is not None) else nan
-                            incl_s = s['incl_s'] if (fresh and s['incl_s'] is not None) else nan
-                        else:                          # zeroing / sweep: no angle yet
-                            out_angle, status = None, phase
-                            incl_t = incl_s = nan
-                        plot_angle = out_angle if out_angle is not None else nan
-                        self.buf.append({
-                            't': t_rel, 'angle': plot_angle,
-                            'incl_t': incl_t, 'incl_s': incl_s, 'rtt': s['rtt'],
-                        })
-                        self.full['t'].append(t_rel)
-                        self.full['angle'].append(plot_angle)
-                        self.full['incl_t'].append(incl_t)
-                        self.full['incl_s'].append(incl_s)
-                        self.full['rtt'].append(s['rtt'])
-                        fill_mode = self.gate.fill_mode
+                # Session time from the board's own micros() clock: the true
+                # measurement timing. The mask handles its 32-bit wrap (~71.6 min).
+                t_acc_us += (s['t_us'] - t_prev_us) & 0xFFFFFFFF
+                t_prev_us = s['t_us']
+                t_rel = t_acc_us / 1e6
 
-                    tq = s['thigh_q']; sq = s['shank_q']
-                    tq_cols = [f"{c:.4f}" for c in tq] if tq else ['', '', '', '']
-                    sq_cols = [f"{c:.4f}" for c in sq] if sq else ['', '', '', '']
-                    writer.writerow([
-                        datetime.now().isoformat(timespec='milliseconds'),
-                        f"{t_rel:.3f}", s['t_us'],
-                        *tq_cols, *sq_cols,
-                        f"{out_angle:.2f}" if out_angle is not None else '',
-                        f"{incl_t:.2f}" if incl_t == incl_t else '',
-                        f"{incl_s:.2f}" if incl_s == incl_s else '',
-                        status, phase, s['rtt'], int(fill_mode),
-                    ])
+                with self._lock:
+                    if phase == 'running':
+                        ok = s['valid']
+                        out_angle, status = self.gate.process(ok, s['angle'] if ok else None)
+                        incl_t = s['incl_t'] if (ok and s['incl_t'] is not None) else nan
+                        incl_s = s['incl_s'] if (ok and s['incl_s'] is not None) else nan
+                    else:                              # zeroing / sweep: no angle yet
+                        out_angle, status = None, phase
+                        incl_t = incl_s = nan
+                    plot_angle = out_angle if out_angle is not None else nan
+                    self.buf.append({
+                        't': t_rel, 'angle': plot_angle,
+                        'incl_t': incl_t, 'incl_s': incl_s, 'rtt': s['rtt'],
+                    })
+                    self.full['t'].append(t_rel)
+                    self.full['angle'].append(plot_angle)
+                    self.full['incl_t'].append(incl_t)
+                    self.full['incl_s'].append(incl_s)
+                    self.full['rtt'].append(s['rtt'])
+                    fill_mode = self.gate.fill_mode
 
-                next_t += GRID_DT
-                sleep = next_t - time.monotonic()
-                if sleep > 0:
-                    time.sleep(sleep)
-                else:
-                    next_t = time.monotonic()   # fell behind; resync the grid
+                tq = s['thigh_q']; sq = s['shank_q']
+                tq_cols = [f"{c:.4f}" for c in tq] if tq else ['', '', '', '']
+                sq_cols = [f"{c:.4f}" for c in sq] if sq else ['', '', '', '']
+                # raw accelerometer (g), filter-free: shows whether a board
+                # physically moved, independent of the orientation filter
+                ta = s['thigh_a']; sa = s['shank_a']
+                ta_cols = [f"{c:.4f}" for c in ta] if ta else ['', '', '']
+                sa_cols = [f"{c:.4f}" for c in sa] if sa else ['', '', '']
+                writer.writerow([
+                    s['wall'].isoformat(timespec='milliseconds'),
+                    f"{t_rel:.3f}", s['t_us'],
+                    *tq_cols, *sq_cols,
+                    f"{out_angle:.2f}" if out_angle is not None else '',
+                    f"{incl_t:.2f}" if incl_t == incl_t else '',
+                    f"{incl_s:.2f}" if incl_s == incl_s else '',
+                    status, phase, s['rtt'], int(fill_mode),
+                    *ta_cols, *sa_cols,
+                ])
         finally:
             if f is not None:
                 f.flush(); f.close()
@@ -942,6 +1009,40 @@ def _self_test():
     assert seen == 30, seen
     assert valid > 0
     print(f"  synthetic source OK ({valid}/{seen} valid)")
+
+    # End to end: a short simulated session must write exactly one CSV row per
+    # data line -- no repeated board timestamps, none skipped.
+    import os
+    import tempfile
+    lines = [0]
+    class CountingSerial(FakeSerial):
+        def readline(self):
+            line = super().readline()
+            if line:
+                lines[0] += 1
+            return line
+    with tempfile.TemporaryDirectory() as tmp:
+        col = Collector(SIM_PORT, simulate=True, cal_seconds=0.3, sweep_seconds=0.3,
+                        diag_prefix=os.path.join(tmp, 'diag'))
+        col._open = lambda: CountingSerial()
+        smp = Sampler(col, path_prefix=os.path.join(tmp, 'knee'))
+        col.start(); smp.start()
+        time.sleep(0.6)                       # reach idle (link proven healthy)
+        before = lines[0]
+        col.request_calibration()
+        time.sleep(2.0)
+        col.stop_collecting(); time.sleep(0.6)
+        after = lines[0]
+        smp.stop(); col.stop(); time.sleep(0.5)   # (no join: these classes use _stop as an Event)
+        with open(smp.current_path) as fh:
+            rows = list(csv.DictReader(fh))
+        stamps = [r['t_thigh_us'] for r in rows]
+        assert len(stamps) == len(set(stamps)), "duplicate samples in CSV"
+        assert rows and len(rows) <= after - before, (len(rows), after - before)
+        t = [float(r['t_session_s']) for r in rows]
+        assert all(b2 > a2 for a2, b2 in zip(t, t[1:])), "session time not increasing"
+        assert any(r['status'] == 'valid' for r in rows)
+    print(f"  one row per sample OK ({len(rows)} rows, no duplicates)")
 
     print("knee_gui self-test PASSED.\n")
 

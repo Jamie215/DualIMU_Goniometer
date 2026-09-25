@@ -17,6 +17,12 @@
  *
  * Wiring (BOTH directions): Peripheral TX(D1)->Central RX(D0) for the stream, and
  * Central TX(D1)->Peripheral RX(D0) for the keepalive, plus GND<->GND.
+ *
+ * DIAGNOSTICS (DIAG = 1): while active, once a second it also sends a health
+ * frame [0] 0xAB, [1..N] PDiag struct, [N+1] XOR of [1..N] on the same link. The
+ * central relays it to the PC as a '# PDIAG ...' line, so the peripheral needs
+ * no USB connection. PDiag must match central_imu.ino byte for byte; flash both
+ * boards with a diagnostic build.
  */
 
 #include "Arduino_BMI270_BMM150.h"
@@ -27,6 +33,45 @@ float integralFBx = 0.0f, integralFBy = 0.0f, integralFBz = 0.0f;
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;   // cached latest orientation
 float accX = 0.0f, accY = 0.0f, accZ = 1.0f;        // cached latest raw accel (g)
 unsigned long lastMicros = 0;
+
+// --------------------------------------------------------------------------- //
+// Diagnostics (see header). Window counters reset each time a frame is sent.
+// --------------------------------------------------------------------------- //
+#define DIAG 1
+const unsigned long DIAG_PERIOD_MS = 1000;
+
+struct __attribute__((packed)) PDiag {
+  uint32_t upMs;          // peripheral millis()
+  uint16_t pktsSent;      // shank packets sent this window
+  uint16_t keepalives;    // 'S' bytes received this window
+  uint16_t rateReinits;   // cumulative low-rate watchdog re-inits
+  uint16_t stallReinits;  // cumulative stall watchdog re-inits
+  uint16_t beginFails;    // cumulative IMU.begin() failures
+  uint16_t lastReinitMs;  // duration of the most recent re-init
+  uint32_t loopMaxUs;     // longest loop() pass this window
+  uint32_t sendLateMaxUs; // worst lateness of a send vs its 20 ms due time
+  uint32_t sendLateAvgUs; // mean lateness
+  int16_t  gyroMaxDps;    // max |gyro| (bias-corrected), deg/s
+  int16_t  gyroAvgDps10;  // mean |gyro|, 0.1 deg/s
+  int16_t  accMinMg;      // min |accel|, milli-g
+  int16_t  accMaxMg;      // max |accel|, milli-g
+  int16_t  integDps10;    // |Mahony integral term| now, 0.1 deg/s
+  int16_t  biasDps100;    // largest axis of the last bias measurement, 0.01 deg/s
+  uint16_t badSamples;    // samples rejected by the sensor-fault guard this window
+  uint16_t readMaxMs;     // slowest accel+gyro read this window, ms
+  uint8_t  biasOk;        // 1 = last bias measurement accepted (board was still)
+  uint8_t  active;
+};
+const uint8_t HDR_PDIAG = 0xAB;
+
+uint16_t dPkts = 0, dKeepalives = 0, dBad = 0;
+unsigned long dReadMax = 0;
+uint16_t dRateReinits = 0, dStallReinits = 0, dBeginFails = 0, dLastReinitMs = 0;
+unsigned long dLoopMax = 0, dLateMax = 0, dLateSum = 0;
+float dGyroMax = 0, dGyroSum = 0, dAccMin = 99, dAccMax = 0;
+float dBiasMax = 0;
+uint8_t dBiasOk = 0;
+unsigned long lastLoopUs = 0, lastDiagMs = 0;
 
 float gyroBias[3] = {0.0f, 0.0f, 0.0f};
 const float BIAS_SANITY_DPS = 3.0f;
@@ -55,6 +100,25 @@ const unsigned long RATE_WINDOW_MS         = 1000;
 const unsigned long MIN_SAMPLES_PER_WINDOW = 30;   // healthy ~50 stream; below this = degraded
 unsigned long sampleCount  = 0;
 unsigned long rateWindowMs = 0;
+
+// Sensor-fault guard. In long tests this board's BMI270 degraded after ~20 min of
+// uptime: individual reads hung for ~190 ms and returned garbage (e.g. two accel
+// axes at -1 count, gyro at 1500-2400 deg/s while perfectly still), and a few
+// minutes later the sensor stopped producing data at all -- IMU.begin() still
+// "succeeded" but took ~1.9 s and nothing followed. So:
+//  1. Each sample is checked; an implausible one never reaches the filter and is
+//     sent as the all-zero quaternion, which the collector already treats as an
+//     invalid (forward-filled) sample.
+//  2. Every re-init also resets the filter's integral term (it winds up on garbage).
+//  3. If no good sample arrives for SENSOR_DEAD_MS, the whole board reboots --
+//     the only recovery left once the sensor stops answering.
+const unsigned long READ_MAX_US     = 50000;   // a healthy read takes ~11 ms; hung reads ~190 ms
+const float ACC_MIN_G               = 0.25f;   // the fault's typical garbage reads ~0.11 g
+const float ACC_MAX_G               = 4.0f;    // the accelerometer's full-scale range
+const float GYRO_CONTRA_DPS         = 1000.0f; // this fast a rotation can't coexist with...
+const float GYRO_CONTRA_ACC_TOL_G   = 0.15f;   // ...an accel reading of ~1 g (centripetal load)
+const unsigned long SENSOR_DEAD_MS  = 5000;
+unsigned long lastGoodMs = 0;
 
 // Fixed stream rate (the 50 Hz baseline). The filter still updates on every IMU
 // sample for smoothness, but we transmit at most one packet per STREAM_PERIOD_US.
@@ -108,6 +172,8 @@ void calibrateGyroBias() {
   if (got > 0) {
     float bx = sx / got, by = sy / got, bz = sz / got;
     float m = max(fabs(bx), max(fabs(by), fabs(bz)));
+    dBiasMax = m;
+    dBiasOk = (m <= BIAS_SANITY_DPS);
     if (m <= BIAS_SANITY_DPS) {
       gyroBias[0] = bx; gyroBias[1] = by; gyroBias[2] = bz;
     }
@@ -182,8 +248,11 @@ void setup() {
   }
 
   if (!IMU.begin()) {
-    while (1) { digitalWrite(LED_BUILTIN, HIGH); delay(150);   // fast blink = IMU init failed
-                digitalWrite(LED_BUILTIN, LOW);  delay(150); }
+    // IMU init failed: fast-blink for ~3 s, then reboot to try again (rather than
+    // hanging forever, which needed a manual reset).
+    for (int i = 0; i < 10; i++) { digitalWrite(LED_BUILTIN, HIGH); delay(150);
+                                   digitalWrite(LED_BUILTIN, LOW);  delay(150); }
+    NVIC_SystemReset();
   }
   // No calibration or streaming at boot -- the board idles until the central signals
   // a collection has begun (see activate()), so the IMU isn't run while unobserved.
@@ -195,6 +264,7 @@ void activate() {
   calibrateGyroBias();
   reinitSeed(2000);
   lastSampleMs  = millis();
+  lastGoodMs    = millis();
   rateWindowMs  = millis();
   lastSendUs    = micros();
   lastCmdMs     = millis();            // set AFTER the ~3 s calibrate so we don't instantly time out
@@ -205,6 +275,7 @@ void activate() {
 // orientation from gravity. Shared by startup and the self-heal re-init.
 void reinitSeed(unsigned long timeout_ms) {
   lastMicros = micros();
+  integralFBx = integralFBy = integralFBz = 0.0f;   // drop any bias learned from bad data
   unsigned long t0 = millis();
   while (!IMU.accelerationAvailable() && millis() - t0 < timeout_ms) { ; }
   if (IMU.accelerationAvailable()) {
@@ -218,35 +289,94 @@ void reinitSeed(unsigned long timeout_ms) {
 // Full sensor re-init: re-configure the BMI270 (restores its default output rate
 // if it came up wrong) and re-seed. This is what a manual board reset was doing
 // by hand; the watchdogs call it automatically.
-void reinitIMU() {
-  IMU.begin();
+void reinitIMU(bool lowRate) {
+  unsigned long t0 = millis();
+  if (lowRate) dRateReinits++; else dStallReinits++;
+  if (!IMU.begin()) dBeginFails++;
   reinitSeed(300);
   lastSampleMs = millis();
   lastReinitMs = millis();
+  dLastReinitMs = (uint16_t)(millis() - t0);
 }
 
-inline void sendPacket() {
+// valid = false sends the all-zero quaternion + accel: the "no data" sentinel the
+// collector already rejects, so a bad sensor sample shows up as a gap, not an angle.
+inline void sendPacket(bool valid = true) {
+  const float z = 0.0f;
   uint8_t pkt[30];
   pkt[0] = 0xAA;
-  memcpy(&pkt[1],  &q0, 4);
-  memcpy(&pkt[5],  &q1, 4);
-  memcpy(&pkt[9],  &q2, 4);
-  memcpy(&pkt[13], &q3, 4);
-  memcpy(&pkt[17], &accX, 4);
-  memcpy(&pkt[21], &accY, 4);
-  memcpy(&pkt[25], &accZ, 4);
+  memcpy(&pkt[1],  valid ? &q0 : &z, 4);
+  memcpy(&pkt[5],  valid ? &q1 : &z, 4);
+  memcpy(&pkt[9],  valid ? &q2 : &z, 4);
+  memcpy(&pkt[13], valid ? &q3 : &z, 4);
+  memcpy(&pkt[17], valid ? &accX : &z, 4);
+  memcpy(&pkt[21], valid ? &accY : &z, 4);
+  memcpy(&pkt[25], valid ? &accZ : &z, 4);
   uint8_t cs = 0;
   for (int i = 1; i <= 28; i++) cs ^= pkt[i];
   pkt[29] = cs;
   Serial1.write(pkt, 30);           // ~30 B at 50 Hz = ~13% of the 115200 link
+  dPkts++;
 }
 
+#if DIAG
+void sendDiag() {
+  PDiag d;
+  d.upMs = millis();
+  d.pktsSent = dPkts;
+  d.keepalives = dKeepalives;
+  d.rateReinits = dRateReinits;
+  d.stallReinits = dStallReinits;
+  d.beginFails = dBeginFails;
+  d.lastReinitMs = dLastReinitMs;
+  d.loopMaxUs = dLoopMax;
+  d.sendLateMaxUs = dLateMax;
+  d.sendLateAvgUs = dPkts ? dLateSum / dPkts : 0;
+  d.gyroMaxDps = (int16_t)min(dGyroMax, 32767.0f);
+  d.gyroAvgDps10 = (int16_t)min(dPkts ? dGyroSum / dPkts * 10 : 0.0f, 32767.0f);
+  d.accMinMg = (int16_t)min(dAccMin * 1000, 32767.0f);
+  d.accMaxMg = (int16_t)min(dAccMax * 1000, 32767.0f);
+  float integ = sqrt(integralFBx * integralFBx + integralFBy * integralFBy +
+                     integralFBz * integralFBz) * RAD_TO_DEG * 10;
+  d.integDps10 = (int16_t)min(integ, 32767.0f);
+  d.biasDps100 = (int16_t)min(dBiasMax * 100, 32767.0f);
+  d.badSamples = dBad;
+  d.readMaxMs = (uint16_t)min(dReadMax / 1000UL, 65535UL);
+  d.biasOk = dBiasOk;
+  d.active = active;
+
+  uint8_t frame[sizeof(PDiag) + 2];
+  frame[0] = HDR_PDIAG;
+  memcpy(&frame[1], &d, sizeof(PDiag));
+  uint8_t cs = 0;
+  for (unsigned i = 1; i <= sizeof(PDiag); i++) cs ^= frame[i];
+  frame[sizeof(PDiag) + 1] = cs;
+  Serial1.write(frame, sizeof(frame));
+
+  dPkts = dKeepalives = dBad = 0;
+  dReadMax = 0;
+  dLoopMax = dLateMax = dLateSum = 0;
+  dGyroMax = dGyroSum = 0; dAccMin = 99; dAccMax = 0;
+}
+#endif
+
 void loop() {
+  unsigned long loopNow = micros();
+  if (active && lastLoopUs != 0 && loopNow - lastLoopUs > dLoopMax) dLoopMax = loopNow - lastLoopUs;
+  lastLoopUs = loopNow;
+#if DIAG
+  if (active && millis() - lastDiagMs >= DIAG_PERIOD_MS) {
+    lastDiagMs = millis();
+    sendDiag();
+    lastLoopUs = micros();          // don't count our own frame write as a slow loop
+  }
+#endif
+
   // Follow the central's collect/idle commands. 'S' (start / keepalive) keeps us
   // active; 'X' idles immediately; no keepalive within CMD_TIMEOUT_MS also idles.
   while (Serial1.available()) {
     char c = Serial1.read();
-    if (c == 'S') { lastCmdMs = millis(); if (!active) activate(); }
+    if (c == 'S') { lastCmdMs = millis(); dKeepalives++; if (!active) activate(); }
     else if (c == 'X') { active = false; }
   }
 
@@ -261,11 +391,15 @@ void loop() {
     return;
   }
 
+  // Last resort: the sensor has produced nothing usable for SENSOR_DEAD_MS (re-inits
+  // included). Reboot the board; after boot it re-activates on the next keepalive.
+  if (millis() - lastGoodMs > SENSOR_DEAD_MS) NVIC_SystemReset();
+
   // Rate watchdog: once per window, re-init the sensor if too few samples streamed.
   // Heals a bad low-rate state (~10 Hz) automatically, no manual reset needed.
   unsigned long tw = millis();
   if (tw - rateWindowMs >= RATE_WINDOW_MS) {
-    if (sampleCount < MIN_SAMPLES_PER_WINDOW) reinitIMU();
+    if (sampleCount < MIN_SAMPLES_PER_WINDOW) reinitIMU(true);
     sampleCount = 0;
     rateWindowMs = millis();
   }
@@ -273,24 +407,50 @@ void loop() {
   // Active: process + stream at a fixed 50 Hz (at most one packet per STREAM_PERIOD_US).
   if ((micros() - lastSendUs) >= STREAM_PERIOD_US
       && IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
+    unsigned long late = micros() - lastSendUs - STREAM_PERIOD_US;
+    if (late > dLateMax) dLateMax = late;
+    dLateSum += late;
     lastSendUs = micros();
     float ax, ay, az, gx, gy, gz;
+    unsigned long r0 = micros();
     readAccel(ax, ay, az);
     readGyro(gx, gy, gz);             // deg/s, handedness-corrected
+    unsigned long readUs = micros() - r0;
     gx -= gyroBias[0]; gy -= gyroBias[1]; gz -= gyroBias[2];
 
-    accX = ax; accY = ay; accZ = az;  // cache raw gravity for the packet
+    float gm = sqrt(gx * gx + gy * gy + gz * gz);
+    float am = sqrt(ax * ax + ay * ay + az * az);
+    if (gm > dGyroMax) dGyroMax = gm;
+    dGyroSum += gm;
+    if (am < dAccMin) dAccMin = am;
+    if (am > dAccMax) dAccMax = am;
+    if (readUs > dReadMax) dReadMax = readUs;
+    lastSampleMs = millis();          // the sensor answered (stall watchdog)
 
-    unsigned long now = micros();
-    float dt = (now - lastMicros) * 1e-6f;
-    lastMicros = now;
-    if (dt <= 0 || dt > 0.5f) dt = 1.0f / 50.0f;
+    // Sensor-fault guard (see the sensor-fault guard constants): a hung read, an impossible
+    // |accel|, or a huge rotation rate while the accelerometer says "still" is a
+    // bad sample. NaN fails the comparisons below too, so it is rejected as well.
+    bool good = readUs <= READ_MAX_US
+             && am >= ACC_MIN_G && am <= ACC_MAX_G
+             && gm < 2000.0f
+             && !(gm > GYRO_CONTRA_DPS && fabs(am - 1.0f) < GYRO_CONTRA_ACC_TOL_G);
+    if (!good) {
+      dBad++;
+      sendPacket(false);              // gap, not a wrong angle; filter untouched
+    } else {
+      accX = ax; accY = ay; accZ = az;  // cache raw gravity for the packet
 
-    mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
-    sendPacket();                     // stream the freshly-updated orientation
+      unsigned long now = micros();
+      float dt = (now - lastMicros) * 1e-6f;
+      lastMicros = now;
+      if (dt <= 0 || dt > 0.5f) dt = 1.0f / 50.0f;
 
-    sampleCount++;
-    lastSampleMs = millis();
+      mahonyUpdate(gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD, ax, ay, az, dt);
+      sendPacket();                   // stream the freshly-updated orientation
+
+      sampleCount++;                  // only good samples keep the rate watchdog happy
+      lastGoodMs = millis();
+    }
     // active: fast heartbeat blink (non-blocking toggle)
     if (millis() - lastBlinkMs >= HEARTBEAT_MS) {
       lastBlinkMs = millis();
@@ -304,6 +464,6 @@ void loop() {
   unsigned long nowMs = millis();
   if (nowMs - lastSampleMs > STALL_WARN_MS) {
     digitalWrite(LED_BUILTIN, HIGH);              // SOLID on = sensor stalled
-    if (nowMs - lastReinitMs > REINIT_EVERY_MS) reinitIMU();
+    if (nowMs - lastReinitMs > REINIT_EVERY_MS) reinitIMU(false);
   }
 }
