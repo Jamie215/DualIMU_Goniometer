@@ -14,7 +14,7 @@ the boards in a precise, repeatable orientation.
 > (building and running the device), [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md)
 > (why it is built this way), and the Preliminary Stationary Test Report
 > (`analysis/static_test/Static_Stability_Test_Report.docx`). Word copies of the
-> docs are in `docs/` (`bash docs/build_docs.sh` regenerates them).
+> docs are in `docs/`; the SOP's Word file is its master copy.
 
 ---
 
@@ -469,8 +469,8 @@ requirements.txt                     Python dependencies (collection, GUI, analy
 analysis/static_test/                stationary test scripts, figures, report (.docx) and FINDINGS.md
 analysis/diagnostics/parse_diag.py   diag log (# CDIAG / # PDIAG lines) -> CSVs + per-minute summary
 docs/HANDOVER.md                     transition summary: state, open issues, next steps
-docs/SOP_Build_and_Use.md            SOP: build, set up and run the device
+docs/SOP_Build_and_Use.docx          SOP: build, set up and run the device (Word master; .md mirror)
 docs/DESIGN_DECISIONS.md             compiled design decisions and rationale
 docs/areas_to_explore.md             research directions (magnetometer, absolute angle, BLE, multi-node)
-docs/build_docs.sh                   regenerates the Word copies of the docs (pandoc)
+docs/build_docs.sh                   regenerates the other docs' Word copies (pandoc)
 ```

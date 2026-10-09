@@ -7,7 +7,8 @@ cd "$(dirname "$0")/.."
 python3 docs/make_reference_docx.py
 REF=docs/reference.docx
 pandoc docs/DESIGN_DECISIONS.md   -o docs/Design_Decisions.docx  --reference-doc="$REF"
-pandoc docs/SOP_Build_and_Use.md  -o docs/SOP_Build_and_Use.docx --reference-doc="$REF"
+# The SOP is edited directly in Word (docs/SOP_Build_and_Use.docx is the master), so it is
+# not regenerated here. docs/SOP_Build_and_Use.md is a mirror of it (see the note at its top).
 pandoc docs/HANDOVER.md           -o docs/Handover_Summary.docx  --reference-doc="$REF"
-python3 docs/style_tables.py docs/Design_Decisions.docx docs/SOP_Build_and_Use.docx docs/Handover_Summary.docx
-echo "Wrote docs/Design_Decisions.docx, docs/SOP_Build_and_Use.docx, docs/Handover_Summary.docx"
+python3 docs/style_tables.py docs/Design_Decisions.docx docs/Handover_Summary.docx
+echo "Wrote docs/Design_Decisions.docx, docs/Handover_Summary.docx"
