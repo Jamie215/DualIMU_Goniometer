@@ -3,3 +3,10 @@ pyserial>=3.5
 
 # Live GUI -- knee_gui.py (Tkinter ships with CPython; matplotlib is extra)
 matplotlib>=3.5
+
+# Analysis scripts -- analysis/
+pandas>=1.3
+numpy>=1.21
+
+# Rebuilding the Word docs -- docs/build_docs.sh (also needs pandoc)
+python-docx>=0.8

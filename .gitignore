@@ -4,3 +4,4 @@ mag_cal.json
 *.csv
 .venv
 *.log
+docs/reference.docx

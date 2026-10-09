@@ -9,6 +9,13 @@ link, and the central merges both segments and streams them to a PC, where
 The design goal is a **placement-independent** angle: you should not have to mount
 the boards in a precise, repeatable orientation.
 
+> **Handover documents:** [`docs/HANDOVER.md`](docs/HANDOVER.md) (current state,
+> open issues, next steps), [`docs/SOP_Build_and_Use.md`](docs/SOP_Build_and_Use.md)
+> (building and running the device), [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md)
+> (why it is built this way), and the Preliminary Stationary Test Report
+> (`analysis/static_test/Static_Stability_Test_Report.docx`). Word copies of the
+> docs are in `docs/` (`bash docs/build_docs.sh` regenerates them).
+
 ---
 
 ## Hardware & wiring
@@ -37,8 +44,9 @@ the boards in a precise, repeatable orientation.
    `peripheral_imu/peripheral_imu.ino` to the shank board (Arduino IDE, board = "Arduino
    Nano 33 BLE", library **Arduino_BMI270_BMM150**). Confirm each reports
    *Done uploading*.
-2. On power-up / reset, **keep both boards still for ~4 s** — they measure gyro
-   bias then. The central prints `# central gyro bias dps: ...`.
+2. When a collection starts (the central's USB port is opened by the collector or
+   GUI), **keep both boards still for ~4 s** — they measure gyro bias then. The
+   central prints `# central gyro bias dps: ...`.
 3. **Sanity check** the link and signal:
    ```
    python knee_collector_uart.py --port /dev/ttyACM0 --monitor
@@ -430,8 +438,11 @@ shank board at a right angle to the thigh board reads ~90°.
 ## Known limitations & next steps
 
 - **Sagittal plane only** — see the trade-off above.
-- **Validate against a protractor** — tape both boards across a hinge, zero
-  straight, sweep the range, and check the reading at known angles.
+- **Validate against a protractor** — a preliminary 45°/90° rig check read
+  45.0° / 89.0° (see the stationary test report); a controlled, repeated test
+  with **both** nodes swept during calibration is still needed.
+- **Faulty board** — one board's BMI270 fails after 20–40 min; replace it before
+  further testing (see `docs/HANDOVER.md`).
 - **Fast dynamic capture** — the gyro-fused gravity direction carries through
   motion; if very fast reps still lag or overshoot, tune the filter (`TWO_KP`)
   and the soft gate (`ACC_TRUST_FULL_G` / `ACC_TRUST_ZERO_G`) on both boards.
@@ -450,8 +461,16 @@ calibration, wireless (BLE) links, and scaling to multiple nodes / joints — se
 ## Files
 
 ```
-central_imu/central_imu.ino   thigh board: 6-DOF filter, reads peripheral stream, streams to PC
-peripheral_imu/peripheral_imu.ino     shank board: 6-DOF filter, streams packets over UART
-knee_collector_uart.py      PC collector: calibration, angle math, CSV, --selftest
+central_imu/central_imu.ino          thigh board: 6-DOF filter, reads peripheral stream, streams to PC
+peripheral_imu/peripheral_imu.ino    shank board: 6-DOF filter, streams packets over UART
+knee_collector_uart.py               PC collector: calibration, angle math, CSV, --selftest
+knee_gui.py                          live GUI over the same math: guided calibration, plots, auto-save
+requirements.txt                     Python dependencies (collection, GUI, analysis)
+analysis/static_test/                stationary test scripts, figures, report (.docx) and FINDINGS.md
 analysis/diagnostics/parse_diag.py   diag log (# CDIAG / # PDIAG lines) -> CSVs + per-minute summary
+docs/HANDOVER.md                     transition summary: state, open issues, next steps
+docs/SOP_Build_and_Use.md            SOP: build, set up and run the device
+docs/DESIGN_DECISIONS.md             compiled design decisions and rationale
+docs/areas_to_explore.md             research directions (magnetometer, absolute angle, BLE, multi-node)
+docs/build_docs.sh                   regenerates the Word copies of the docs (pandoc)
 ```
