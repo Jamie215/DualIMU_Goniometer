@@ -4,3 +4,6 @@ mag_cal.json
 *.csv
 .venv
 *.log
+build/
+dist/
+*.spec
