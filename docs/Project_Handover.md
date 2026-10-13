@@ -118,7 +118,7 @@ Companion documents:
 | `knee_gui.py` | Live GUI (uses `knee_collector_uart.py`) |
 | `requirements.txt` | Python dependencies |
 | `DualIMU_Goniometer.stl` | 3D printable board case (base + lid) |
-| `analysis/static_test/` | Stationary Test Report, its figures, and the one-off scripts that produced them (written for that dataset) |
+| `analysis/static_test/` | Stationary Test Report, its figures, and the analysis scripts behind them (reusable for future stationary tests) |
 | `analysis/diagnostics/parse_diag.py` | Diagnostic log → tables |
 | `docs/` | SOP, this document, and its figures (`docs/images/handover/`) |
 | `docs/build_docs.sh` | Regenerates this document's `.docx` from its Markdown |
