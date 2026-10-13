@@ -6,8 +6,7 @@
 > `pandoc docs/SOP_Build_and_Use.docx -t gfm --extract-media=docs/images/sop -o docs/SOP_Build_and_Use.md`
 > (and change `docs/images/` to `images/` in the image links).
 
-*Version 1.0, October 2026. Matches GUI program v1.0.0 and the board
-programs released with it.*
+*Drafted in October 2026, prepared by Jamie Kim*
 
 # 1. Purpose and scope
 
@@ -37,7 +36,7 @@ board. Labelled PERIPHERAL.
 and loading it onto the board.
 
 • **GUI program.** The data-collection program, `KneeGoniometerGUI.exe`
-(Windows). No installation or Python needed (§4.3).
+(Windows). No installation needed (§4.3).
 
 • **Terminal** (Python version only). A window where you type commands
 (Command Prompt on Windows, Terminal on macOS).
@@ -79,7 +78,9 @@ Figure 1. MSK-IF version research prototype
 > Note: If using the research prototype developed by MSK-IF: the motion
 > sensor on one of the two original boards is faulty and stops working
 > after 20–40 minutes of use (see the Preliminary Stationary Test
-> Report). Replace that board before further testing.
+> Report). Replace that board before further testing (It should be the
+> one without the red cable soldered to 3.3V pin but validate before
+> replacing).
 
 # 3. Building the prototype
 
@@ -147,17 +148,17 @@ the folder to your preferred location. Load (“flash”) both boards from
 the same version of the files.
 
 1.  Connect the thigh (central) board to the PC by USB. In the Arduino
-    IDE, open `central_imu``/``central_imu.ino` from the project folder.
+    IDE, open `central_imu/central_imu.ino` from the project folder.
     Select the board **Arduino Nano 33 BLE** and its port (**Tools →
     Port**), then click **Upload** (the → arrow). Wait for the message
     *Done uploading*.
 2.  Connect the shank (peripheral) board and repeat with
-    `peripheral_imu``/``peripheral_imu.ino`. When it restarts, its small
+    `peripheral_imu/peripheral_imu.ino`. When it restarts, its small
     **orange** light flashes 3 times quickly and then blinks slowly.
     (The green light is just the power light and is always on.)
 3.  Optional check: with the thigh board connected, open **Tools →
     Serial Monitor** and set it to 115200 baud. A line starting with
-    “`# CENTRAL ``fw``:`” means the program is loaded. Close the Serial
+    “`# CENTRAL fw:`” means the program is loaded. Close the Serial
     Monitor afterwards — only one program can use the board’s connection
     at a time.
 
@@ -173,8 +174,7 @@ GUI saves for troubleshooting. This is switched on by the line
 
 ## 4.3 Installing the GUI program (Windows)
 
-The GUI program is a single file, `KneeGoniometerGUI.exe`. Nothing else
-needs to be installed, not even Python.
+The GUI program is a single executable file, `KneeGoniometerGUI.exe`.
 
 1\. Download `KneeGoniometerGUI.exe` from the latest release on the
 project’s Releases page ([Link to
@@ -182,7 +182,7 @@ Releases](https://github.com/Jamie215/DualIMU_Goniometer/releases)).
 Under Assets, click the file name.
 
 2\. Make a folder for it somewhere you can write to, for example
-`Documents\``KneeGoniometer`, and move the file there. Recordings are
+`Documents\KneeGoniometer`, and move the file there. Recordings are
 saved in the same folder as the program, so do not put it in Program
 Files.
 
@@ -214,19 +214,19 @@ old file.
 2.  Choose a spot where the skin and muscle move as little as possible
     when the knee bends and straightens: the flat middle part of each
     segment, away from the knee joint and the kneecap, and not over a
-    muscle that bulges when it tightens. Recommended spots are the outer
-    side of the lower thigh, about a hand-width above the kneecap, and
-    the flat inner surface of the shin bone (or the outer side of the
-    shank), about a hand-width below the knee. Do not place a board over
-    the knee crease or the kneecap.
+    muscle that bulges when it contracts. Recommended spots are the
+    outer side of the lower thigh, about a hand-width above the kneecap,
+    and the flat inner surface of the shin bone (or the outer side of
+    the shank), about a hand-width below the knee. Do not place a board
+    over the knee crease or the kneecap.
 3.  Line up each board’s long side roughly with the leg, with the arrow
     (USB port) pointing toward the hip. The boards do not need to be
     lined up exactly as the calibration at the start of each session
     takes care of how they are mounted.
 4.  Fasten each board firmly with an elastic strap so it cannot slide or
     turn during the session. If a board moves on the leg after
-    calibration, the angle will be wrong. Route the wire so it does not
-    pull on either board.
+    calibration, the measured angle will become inaccurate. Route the
+    wires so they do not pull on either board.
 
 # 7. Running a session (GUI — recommended)
 
@@ -249,7 +249,7 @@ old file.
       the leg a few times, moving **both the knee and the hip** (e.g.
       marching on the spot or a sit-to-stand), so that each board tilts
       by more than 5°. A board that does not tilt enough is left out of
-      the angle (Figure 5).
+      the angle calculation (Figure 5).
     - Green “**RUNNING**”: carry out the task. The angle goes up as the
       knee bends (Figure 6).
 5.  Click **Stop collecting** when done. The graphs then show the whole
@@ -263,7 +263,7 @@ old file.
     standby.
 
 The screenshots below show each step. They were taken in the GUI’s
-practice mode (made-up data), so the numbers will differ from a real
+simulated mode (dummy data), so the numbers will differ from a real
 session. The top graph is the knee angle, the middle graph shows the
 tilt of each board, and the bottom graph shows how fresh the shank data
 is (low, steady values are good). Bottom right, “valid %” is the share
@@ -309,10 +309,10 @@ gap. This only changes how the data points are plotted in the chart.
 The first command shows a live check of the link and the board tilts;
 the second records a session to `trial1.csv`. Replace COM5 with the
 thigh board’s port (`COMx` on Windows, `/dev/ttyACM0` on Linux,
-`/dev/``cu.usbmodem``…` on macOS). To find it, look in the Arduino IDE
-under **Tools → Port**, or in the GUI’s Port box. The command-line
-program walks through the same hold-still (2 s) and sweep (6 s) steps;
-`--``cal``-seconds` and `--sweep-seconds` change their length.
+`/dev/cu.usbmodem…` on macOS). To find it, look in the Arduino IDE under
+**Tools → Port**, or in the GUI’s Port box. The command-line program
+walks through the same hold-still (2 s) and sweep (6 s) steps;
+`--cal-seconds` and `--sweep-seconds` change their length.
 
 # 8. Data handling
 
@@ -328,11 +328,10 @@ program walks through the same hold-still (2 s) and sweep (6 s) steps;
     `.csv` file opens in Excel.
 2.  Write down which file belongs to which trial (date, participant or
     setup, sensor placement, notes).
-3.  For technical users: when analysing, leave out the calibration rows
-    (the `phase` column is not `running`). The stationary analysis also
-    left out the first 20 s of each session.
+3.  For technical users: when analyzing, leave out the calibration rows
+    (the `phase` column is not `running`).
 4.  For technical users:
-    `python analysis/diagnostics/parse_diag.py ``knee_diag``_<timestamp>.log`
+    `python analysis/diagnostics/parse_diag.py knee_diag_<timestamp>.log`
     turns a health log into tables and a per-minute summary.
 
 # 9. Troubleshooting
@@ -369,9 +368,9 @@ program walks through the same hold-still (2 s) and sweep (6 s) steps;
 # Appendix A. Python version (optional)
 
 You only need this version to change the GUI, to use the command-line
-tools (§7.1), or to run the GUI on macOS/Linux. Most users should use
-the GUI program instead (§4.3). The GUI is written in Python; these
-steps install Python and the add-ons it needs, once per PC.
+tools (§7.1), or to run the GUI on macOS/Linux. The GUI is written in
+Python; these steps install Python and the add-ons it needs, once per
+PC.
 
 1\. Install Python 3.8 or newer from python.org. On Windows, tick “Add
 Python to PATH” on the first screen of the installer. (On Linux, also
@@ -405,7 +404,7 @@ each. Use the set for your computer.
 
 What the commands do: the first line creates a private Python workspace
 for this project (a “virtual environment”) and the second switches it on
-— the start of the line then shows **(.venv)**. The `pip ``install` line
+— the start of the line then shows **(.venv)**. The `pip install` line
 downloads the add-ons the program needs; this can take a few minutes.
 The two *selftest* lines check the installation without any hardware:
 they should end with “Self-test PASSED.” and “knee_gui self-test
@@ -414,22 +413,22 @@ practise; close its window when done.
 
 **Next time:** you do not repeat the installation. Just open a terminal
 in the project folder and run the second line again
-(`.``venv``\Scripts\activate` on Windows,
-`source .``venv``/bin/activate` on macOS/Linux) to switch the workspace
-on, then type `python knee_gui.py` to start the GUI.
+(`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on
+macOS/Linux) to switch the workspace on, then type `python knee_gui.py`
+to start the GUI.
 
 # Appendix B. Releasing an updated GUI (for developers)
 
 If you change the GUI’s code (`knee_gui.py` or
-`knee_collector_uart.py`), publish a new `KneeGoniometerGUI.exe` so that
-users get the change. The project builds the program automatically when
-a new version number (a “tag”) is added to the repository. This needs
-Git installed, a copy of the repository made with `git clone` (not the
-ZIP download from §4.2), and permission to change the repository on
-GitHub.
+`knee_collector_uart.py`), publish a new `KneeGoniometerGUI.exe` so the
+executable application also is updated. The project builds the program
+automatically when a new version number (a “tag”) is added to the
+repository. This needs Git installed, a copy of the repository made with
+`git clone` (not the ZIP download from §4.2), and permission to change
+the repository on GitHub.
 
 1\. Check your change with the Python version (Appendix A): run the two
-selftest lines and `python knee_gui.py --``simulate`, and ideally record
+selftest lines and `python knee_gui.py --simulate`, and ideally record
 one session with the device.
 
 2\. Merge your change into the main branch of the repository.
@@ -455,7 +454,7 @@ problem and use a new version number.
 6\. Ask users to download the new program and replace their old file
 (§4.3).
 
-Changes to the board programs (the `.``ino` files) are not part of the
-GUI program: anyone using them must load the new version onto both
-boards (§4.2). The full steps are in the README, under “Releasing an
-updated GUI”.
+Changes to the board programs (the `.ino` files) are not part of the GUI
+program: anyone using them must load the new version onto both boards
+(§4.2). The full steps are in the README, under “Releasing an updated
+GUI”.

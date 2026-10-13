@@ -52,7 +52,8 @@ docs/build_docs.sh                   regenerates the design-decisions and handov
 ## Open issues
 
 1. **Faulty board.** One board's BMI270 fails after 20–40 min. It must be
-   identified, labelled and replaced.
+   identified, labelled and replaced. It should be the board without the red
+   wire soldered to the 3.3 V pin; confirm before replacing it.
 2. **Raw test data not preserved.** The stationary-test CSVs and diagnostic
    logs were not archived (`*.csv` / `*.log` are git-ignored), so the figures in
    the report cannot be regenerated. Plan data storage once testing moves
