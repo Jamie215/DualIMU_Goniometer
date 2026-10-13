@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="660" viewBox="0 0 1500 660" font-family="Carlito, Calibri, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#404040"/>
+    </marker>
+  </defs>
+  <rect width="1500" height="660" fill="#fff"/>
+
+  <!-- inputs -->
+  <rect x="30" y="30" width="430" height="170" rx="12" fill="#FBE5D6" stroke="#C55A11" stroke-width="2.5"/>
+  <text x="54" y="74" font-size="29" font-weight="bold" fill="#0B0B0B">Accelerometer</text>
+  <text x="54" y="114" font-size="25" fill="#0B0B0B">Shows which way is down;</text>
+  <text x="54" y="146" font-size="25" fill="#0B0B0B">never drifts, but is disturbed</text>
+  <text x="54" y="178" font-size="25" fill="#0B0B0B">by fast movement</text>
+
+  <rect x="30" y="240" width="430" height="170" rx="12" fill="#DEEBF7" stroke="#1F4E79" stroke-width="2.5"/>
+  <text x="54" y="284" font-size="29" font-weight="bold" fill="#0B0B0B">Gyroscope</text>
+  <text x="54" y="324" font-size="25" fill="#0B0B0B">Follows fast movement smoothly,</text>
+  <text x="54" y="356" font-size="25" fill="#0B0B0B">but small errors add up over</text>
+  <text x="54" y="388" font-size="25" fill="#0B0B0B">time (drift)</text>
+
+  <rect x="30" y="450" width="430" height="110" rx="12" fill="#fff" stroke="#A6A6A6" stroke-width="2.5" stroke-dasharray="9 7"/>
+  <text x="54" y="494" font-size="29" font-weight="bold" fill="#8C8C8C">Magnetometer</text>
+  <text x="54" y="532" font-size="25" fill="#8C8C8C">On the board, not used (§4.1)</text>
+
+  <!-- arrows with adjustments -->
+  <line x1="460" y1="115" x2="800" y2="115" stroke="#404040" stroke-width="3.5" marker-end="url(#ah)"/>
+  <rect x="510" y="88" width="250" height="54" rx="27" fill="#FFF2CC" stroke="#BF9000" stroke-width="2"/>
+  <text x="635" y="123" font-size="24" fill="#0B0B0B" text-anchor="middle">× trust weight (§4.3)</text>
+
+  <line x1="460" y1="325" x2="800" y2="325" stroke="#404040" stroke-width="3.5" marker-end="url(#ah)"/>
+  <rect x="510" y="298" width="250" height="54" rx="27" fill="#FFF2CC" stroke="#BF9000" stroke-width="2"/>
+  <text x="635" y="333" font-size="24" fill="#0B0B0B" text-anchor="middle">− bias (§4.2)</text>
+
+  <line x1="460" y1="505" x2="560" y2="505" stroke="#A6A6A6" stroke-width="3" stroke-dasharray="8 6"/>
+  <path d="M572,493 L596,517 M596,493 L572,517" stroke="#A6A6A6" stroke-width="4"/>
+
+  <!-- filter -->
+  <rect x="806" y="40" width="300" height="360" rx="14" fill="#E2EFDA" stroke="#548235" stroke-width="2.5"/>
+  <text x="956" y="96" font-size="29" font-weight="bold" fill="#0B0B0B" text-anchor="middle">Filter</text>
+  <text x="956" y="128" font-size="22" fill="#404040" text-anchor="middle">(Mahony, 6-DOF)</text>
+  <text x="956" y="196" font-size="25" fill="#0B0B0B" text-anchor="middle">The gyroscope</text>
+  <text x="956" y="228" font-size="25" fill="#0B0B0B" text-anchor="middle">tracks movement;</text>
+  <text x="956" y="276" font-size="25" fill="#0B0B0B" text-anchor="middle">the accelerometer</text>
+  <text x="956" y="308" font-size="25" fill="#0B0B0B" text-anchor="middle">slowly corrects</text>
+  <text x="956" y="340" font-size="25" fill="#0B0B0B" text-anchor="middle">its drift</text>
+
+  <!-- output -->
+  <line x1="1106" y1="220" x2="1166" y2="220" stroke="#404040" stroke-width="3.5" marker-end="url(#ah)"/>
+  <rect x="1172" y="120" width="300" height="200" rx="12" fill="#EDEDED" stroke="#404040" stroke-width="2.5"/>
+  <text x="1322" y="170" font-size="29" font-weight="bold" fill="#0B0B0B" text-anchor="middle">Orientation</text>
+  <text x="1322" y="212" font-size="25" fill="#0B0B0B" text-anchor="middle">→ which way gravity</text>
+  <text x="1322" y="244" font-size="25" fill="#0B0B0B" text-anchor="middle">points in the board</text>
+  <text x="1322" y="290" font-size="22" fill="#404040" text-anchor="middle">used for the angle (§5)</text>
+
+  <!-- trust weight inset -->
+  <text x="680" y="462" font-size="24" font-weight="bold" fill="#0B0B0B">Accelerometer trust weight (§4.3)</text>
+  <line x1="740" y1="600" x2="1130" y2="600" stroke="#595959" stroke-width="2"/>
+  <line x1="740" y1="490" x2="740" y2="600" stroke="#595959" stroke-width="2"/>
+  <polyline points="740,500 784,500 1003,600 1120,600" fill="none" stroke="#BF9000" stroke-width="4"/>
+  <line x1="784" y1="500" x2="784" y2="606" stroke="#BFBFBF" stroke-dasharray="4 4"/>
+  <text x="730" y="508" font-size="20" fill="#595959" text-anchor="end">full</text>
+  <text x="730" y="606" font-size="20" fill="#595959" text-anchor="end">none</text>
+  <text x="740" y="628" font-size="20" fill="#595959" text-anchor="middle">0</text>
+  <text x="784" y="628" font-size="20" fill="#595959" text-anchor="middle">0.1 g</text>
+  <text x="1003" y="628" font-size="20" fill="#595959" text-anchor="middle">0.6 g</text>
+  <text x="1135" y="652" font-size="20" fill="#595959" text-anchor="end">difference of |accel| from normal gravity (1 g)</text>
+</svg>

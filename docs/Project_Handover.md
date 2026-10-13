@@ -18,8 +18,8 @@ This is the handover record for the dual-IMU knee goniometer proof of concept
   weighed but not pursued yet.
 
 **Reading without a technical background.** Each section opens with a short
-*In short* summary in plain language; the bullets below it give the detail for
-whoever maintains the device. Technical terms are explained in the Key terms
+summary in plain language; the bullets below it give the detail for whoever
+maintains the device. Technical terms are explained in the Key terms
 table below.
 
 Companion documents:
@@ -142,7 +142,7 @@ sit-to-stand), relative to a calibration pose. Absolute anatomical angles and
 
 # 3. System architecture
 
-*In short:* one motion sensor sits on the thigh and one on the shank. The shank
+One motion sensor sits on the thigh and one on the shank. The shank
 board sends its readings to the thigh board through a wire; the thigh board
 adds its own and passes both to the PC, which works out the knee angle, shows
 it live and saves it (Figures 1 and 2).
@@ -185,11 +185,13 @@ it live and saves it (Figures 1 and 2).
 - **Trade-offs:** The person is tied to the PC and to power, and a wire runs
   across the knee. Batteries and wireless links are future work (Appendix C).
 
-# 4. Sensor fusion (on each board)
+# 4. Sensor fusion
 
-*In short:* each board turns its raw sensor readings into a steady estimate of
+Each board turns its raw sensor readings into a steady estimate of
 how it is tilted. These choices keep that estimate stable at rest and accurate
-during movement.
+during movement (Figure 3).
+
+![Figure 3. How each board estimates its orientation. The filter blends the gyroscope and the accelerometer; the gyroscope's bias is removed first (§4.2) and the accelerometer counts for less during fast movement (§4.3).](images/handover/fig3_fusion.png)
 
 *Note for maintainers:* the Arduino library for this sensor reports its axes as
 a mirror image of the real directions, so the firmware flips one axis (x) of the
@@ -205,6 +207,7 @@ design choice, but **any new firmware must keep it** (README, finding #1).
   for each board, and these two sensors give that without drift. A magnetometer
   is sensitive to the nearby environment (furniture, treadmills, cables, the
   other board) and needs extra calibration for each board.
+
 ## 4.2 Measuring gyroscope bias at the start, with a safety check
 
 - **Design Decision:** When a collection starts, the board averages about 300 gyroscope
@@ -225,18 +228,18 @@ design choice, but **any new firmware must keep it** (README, finding #1).
 
 # 5. Knee-angle method (PC side)
 
-*In short:* the PC measures how far each segment has tilted from the pose held
+The PC measures how far each segment has tilted from the pose held
 at the start, using the direction of gravity seen by each board. The knee angle
-is the thigh's tilt minus the shank's tilt (Figure 3). Because only tilt relative
+is the thigh's tilt minus the shank's tilt (Figure 4). Because only tilt relative
 to gravity is used, the boards do not need to be placed precisely.
 
 ## 5.1 Measuring each segment's tilt against gravity
 
-![Figure 3. How the knee angle is computed. Each segment's inclination is its tilt from the zero pose, measured from gravity in its own board; the knee angle is their difference.](images/handover/fig3_angle.png)
+![Figure 4. How the knee angle is computed. Each segment's inclination is its tilt from the zero pose, measured from gravity in its own board; the knee angle is their difference.](images/handover/fig4_angle.png)
 
 - **Design Decision:** For each board, find which way gravity points in that board's
   own frame, turn that into a signed tilt (inclination) in the side-view plane,
-  and take the knee angle as `incl_thigh − incl_shank` (Figure 3).
+  and take the knee angle as `incl_thigh − incl_shank` (Figure 4).
 - **Why:** Tilt measured against gravity does not drift, and it does not depend
   on which way the person is facing (heading), the one thing these sensors
   cannot track reliably. How each board is mounted cancels out, so placement does
@@ -256,9 +259,9 @@ to gravity is used, the boards do not need to be placed precisely.
 
 ## 5.3 Two-step calibration: hold still, then move
 
-![Figure 4. A session in the GUI, from connecting to stopping.](images/handover/fig4_session.png)
+![Figure 5. A session in the GUI, from connecting to stopping.](images/handover/fig5_session.png)
 
-- **Design Decision:** Each session starts with (Figure 4):
+- **Design Decision:** Each session starts with (Figure 5):
   1. **Zeroing** (2 s): leg straight and still. The gravity direction each board
      sees becomes its 0°.
   2. **Sweep** (6 s): a few slow movements bending the knee and hip. The
@@ -297,7 +300,7 @@ knee bending while upright.
 
 # 6. Board-to-board link and data protocol
 
-*In short:* how the two boards talk to each other and to the PC. The choices
+This section focuses on how the two boards talk to each other and to the PC. The choices
 favour reliability: a lost or corrupted message costs one sample instead of
 breaking the stream, and neither board ever waits on the other.
 
@@ -333,7 +336,7 @@ breaking the stream, and neither board ever waits on the other.
   connection open. The thigh board then measures its gyroscope bias and sends a
   keepalive every 200 ms; the shank board stops if it hears nothing for 1 s.
 - **Why:** Nothing runs unobserved, and every session starts with a fresh bias
-  measurement taken while the boards are still (Figure 4).
+  measurement taken while the boards are still (Figure 5).
 
 ## 6.5 A steady 50 samples per second
 
@@ -354,7 +357,7 @@ breaking the stream, and neither board ever waits on the other.
 
 # 7. Robustness and fault handling
 
-*In short:* the shank board watches its own sensor and restarts it when it
+The shank board watches its own sensor and restarts it when it
 misbehaves, and it sends a gap rather than a wrong reading. The LEDs show what
 each board is doing.
 
@@ -390,7 +393,7 @@ each board is doing.
 
 # 8. PC software
 
-*In short:* operators use a Windows program that walks them through calibration,
+Operators use a Windows program that walks them through calibration,
 shows the angle live and saves every session to its own file. Every reading
 received is saved once, and gaps are marked rather than hidden.
 
@@ -406,7 +409,7 @@ received is saved once, and gaps are marked rather than hidden.
 
 - **Design Decision:** Each "Calibrate & collect" starts a new session with a fresh
   calibration and a new time-stamped CSV file; "Stop collecting" freezes the plot
-  so the whole session can be reviewed (Figure 4). Exactly one row is saved per
+  so the whole session can be reviewed (Figure 5). Exactly one row is saved per
   reading received, timed by the board's clock.
 - **Why:** Each file then has exactly one calibration, and rows follow the
   board's evenly spaced samples rather than the PC's timer, which runs unevenly
@@ -443,7 +446,7 @@ board.
 
 # 9. Testing and validation
 
-*In short:* with the sensors held still, the angle was very steady (changes of a
+With the sensors held still, the angle was very steady (changes of a
 few hundredths of a degree) and did not drift on healthy hardware. Long runs
 exposed one faulty board. Movement and on-body testing have not been done yet
 (§1.3).
@@ -478,8 +481,6 @@ test for drift; a right-angle placement read ~90°. The self-tests
 
 # 10. Directions considered but not pursued
 
-*In short:* four ideas were looked at for later. Each is explained in an appendix.
-
 | Area | Recommendation |
 |---|---|
 | A. Magnetometer | Do not add for knee bending; only worth it if full 3-D movement must be measured, after checking the room for magnetic interference. |
@@ -506,7 +507,7 @@ The commit codes identify each change in the project's version history (GitHub).
 
 # Appendix A — Magnetometer: accuracy, and absolute vs. relative angle
 
-*In short:* adding the board's compass sensor would not make the knee angle more
+Adding the board's compass sensor would not make the knee angle more
 accurate, and it cannot give a true anatomical angle either. It is only worth
 revisiting if full 3-D movement ever needs to be measured.
 
@@ -607,7 +608,7 @@ pose is held becomes 0°, and the unknown mounting cancels out.
 
 # Appendix B — Anatomical angle via functional calibration
 
-*In short:* to report true anatomical angles (for example, a knee that cannot
+To report true anatomical angles (for example, a knee that cannot
 fully straighten), the software must learn how each board sits on its bone. A
 short calibration movement that reveals the knee's hinge axis can do this. Not
 built yet.
@@ -650,7 +651,7 @@ reference that **sees the anatomy**.
 
 # Appendix C — Wireless (Bluetooth) links
 
-*In short:* the boards already have Bluetooth radios. Using them would remove the
+The boards already have Bluetooth radios. Using them would remove the
 wires, mainly for safety and ethics approval, at the cost of batteries and less
 predictable timing. Not investigated in depth.
 
@@ -699,7 +700,7 @@ naturally.
 
 # Appendix D — More sensors and joints
 
-*In short:* measuring more than one joint (for example hip, knee and ankle, or
+Measuring more than one joint (for example hip, knee and ankle, or
 both knees) needs more boards, a way to tell them apart, and careful time
 matching between them. Not investigated in depth.
 

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1650" height="395" viewBox="0 0 1650 395" font-family="Carlito, Calibri, sans-serif">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#404040"/></marker></defs>
+  <rect width="1650" height="395" fill="#fff"/>
+  <path d="M30,126 L470,126 L492,176.0 L470,226 L30,226 L30,126 Z" fill="#607D8B"/>
+  <text x="261.0" y="170.0" font-size="26" font-weight="bold" fill="#fff" text-anchor="middle">Port opens · boards start</text>
+  <text x="261.0" y="204.0" font-size="21" fill="#fff" text-anchor="middle">gyro bias, up to 4 s: keep boards still</text>
+  <path d="M482,126 L752,126 L774,176.0 L752,226 L482,226 L504,176.0 L482,126 Z" fill="#F9A825"/>
+  <text x="628.0" y="170.0" font-size="26" font-weight="bold" fill="#0B0B0B" text-anchor="middle">ZEROING · 2 s</text>
+  <text x="628.0" y="204.0" font-size="21" fill="#0B0B0B" text-anchor="middle">leg straight and still</text>
+  <path d="M764,126 L1072,126 L1094,176.0 L1072,226 L764,226 L786,176.0 L764,126 Z" fill="#F9A825"/>
+  <text x="929.0" y="170.0" font-size="26" font-weight="bold" fill="#0B0B0B" text-anchor="middle">SWEEP · 6 s</text>
+  <text x="929.0" y="204.0" font-size="21" fill="#0B0B0B" text-anchor="middle">slowly bend knee and hip</text>
+  <path d="M1084,126 L1440,126 L1462,176.0 L1440,226 L1084,226 L1106,176.0 L1084,126 Z" fill="#2E7D32"/>
+  <text x="1273.0" y="170.0" font-size="26" font-weight="bold" fill="#fff" text-anchor="middle">RUNNING</text>
+  <text x="1273.0" y="204.0" font-size="21" fill="#fff" text-anchor="middle">angle at 50 Hz → plot + CSV</text>
+  <path d="M1452,126 L1620,126 L1620,226 L1452,226 L1474,176.0 L1452,126 Z" fill="#455A64"/>
+  <text x="1547.0" y="185.0" font-size="24" fill="#fff" text-anchor="middle">idle</text>
+  <rect x="150.0" y="20" width="200" height="58" rx="29" fill="#fff" stroke="#404040" stroke-width="2.5"/>
+  <text x="250" y="58" font-size="25" font-weight="bold" fill="#0B0B0B" text-anchor="middle">Connect</text>
+  <line x1="250" y1="78" x2="250" y2="122" stroke="#404040" stroke-width="2.5" marker-end="url(#ah)"/>
+  <rect x="472.0" y="20" width="290" height="58" rx="29" fill="#fff" stroke="#404040" stroke-width="2.5"/>
+  <text x="617" y="58" font-size="25" font-weight="bold" fill="#0B0B0B" text-anchor="middle">Calibrate &amp; collect</text>
+  <line x1="617" y1="78" x2="617" y2="122" stroke="#404040" stroke-width="2.5" marker-end="url(#ah)"/>
+  <rect x="1326.0" y="20" width="240" height="58" rx="29" fill="#fff" stroke="#404040" stroke-width="2.5"/>
+  <text x="1446" y="58" font-size="25" font-weight="bold" fill="#0B0B0B" text-anchor="middle">Stop collecting</text>
+  <line x1="1446" y1="78" x2="1446" y2="122" stroke="#404040" stroke-width="2.5" marker-end="url(#ah)"/>
+  <text x="30" y="270" font-size="22" fill="#404040">Board: gyro bias removed</text>
+  <text x="30" y="300" font-size="22" fill="#404040">(discarded if &gt; 3 °/s)</text>
+  <text x="482" y="270" font-size="22" fill="#404040">PC: average gravity →</text>
+  <text x="482" y="300" font-size="22" fill="#404040">0° axis per segment</text>
+  <text x="764" y="270" font-size="22" fill="#404040">PC: tilt direction →</text>
+  <text x="764" y="300" font-size="22" fill="#404040">forward axis (≥ 5° tilt)</text>
+  <text x="1084" y="270" font-size="22" fill="#404040">PC: one CSV row per</text>
+  <text x="1084" y="300" font-size="22" fill="#404040">received sample</text>
+  <text x="1452" y="270" font-size="22" fill="#404040">Plot freezes</text>
+  <text x="1452" y="300" font-size="22" fill="#404040">on the session</text>
+  <line x1="482" y1="335" x2="1440" y2="335" stroke="#7F7F7F" stroke-width="2"/>
+  <line x1="482" y1="325" x2="482" y2="345" stroke="#7F7F7F" stroke-width="2"/><line x1="1440" y1="325" x2="1440" y2="345" stroke="#7F7F7F" stroke-width="2"/>
+  <text x="961" y="374" font-size="22" fill="#404040" text-anchor="middle">one session = one calibration = one time-stamped CSV file</text>
+</svg>
