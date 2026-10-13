@@ -25,9 +25,9 @@ No Python is needed.
 - Firmware: see [Quick start](#quick-start-developers-command-line) and the
   [wire protocol](#data-format--wire-protocol); reflash **both** boards after a change.
 
-**Background.** [`docs/HANDOVER.md`](docs/HANDOVER.md) (current state, open issues,
-next steps), [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md) (why it is built
-this way), and the Preliminary Stationary Test Report
+**Background.** [`docs/Project_Handover.md`](docs/Project_Handover.md) (current state,
+open issues and next steps; why it is built this way; research directions), and the
+Preliminary Stationary Test Report
 (`analysis/static_test/Static_Stability_Test_Report.docx`).
 
 ---
@@ -524,7 +524,7 @@ shank board at a right angle to the thigh board reads ~90°.
   45.0° / 89.0° (see the stationary test report); a controlled, repeated test
   with **both** nodes swept during calibration is still needed.
 - **Faulty board** — one board's BMI270 fails after 20–40 min; replace it before
-  further testing (see `docs/HANDOVER.md`).
+  further testing (see `docs/Project_Handover.md`).
 - **Fast dynamic capture** — the gyro-fused gravity direction carries through
   motion; if very fast reps still lag or overshoot, tune the filter (`TWO_KP`)
   and the soft gate (`ACC_TRUST_FULL_G` / `ACC_TRUST_ZERO_G`) on both boards.
@@ -535,8 +535,8 @@ shank board at a right angle to the thigh board reads ~90°.
 
 For larger research directions being weighed — magnetometer fusion and the
 absolute-vs-relative angle question, absolute (anatomical) angle via functional
-calibration, wireless (BLE) links, and scaling to multiple nodes / joints — see
-[`docs/areas_to_explore.md`](docs/areas_to_explore.md).
+calibration, wireless (BLE) links, and scaling to multiple nodes / joints — see the appendices of
+[`docs/Project_Handover.md`](docs/Project_Handover.md).
 
 ---
 
@@ -548,13 +548,12 @@ peripheral_imu/peripheral_imu.ino    shank board: 6-DOF filter, streams packets 
 knee_collector_uart.py               PC collector: calibration, angle math, CSV, --selftest
 knee_gui.py                          live GUI over the same math: guided calibration, plots, auto-save
 requirements.txt                     Python dependencies (collection, GUI, analysis)
+DualIMU_Goniometer.stl               3-D printable board case (base + lid)
 analysis/static_test/                stationary test scripts, figures, report (.docx) and FINDINGS.md
 analysis/diagnostics/parse_diag.py   diag log (# CDIAG / # PDIAG lines) -> CSVs + per-minute summary
-docs/HANDOVER.md                     transition summary: state, open issues, next steps
 docs/SOP_Build_and_Use.docx          SOP: build, set up and run the device (Word master; .md mirror)
-docs/DESIGN_DECISIONS.md             compiled design decisions and rationale
-docs/areas_to_explore.md             research directions (magnetometer, absolute angle, BLE, multi-node)
-docs/build_docs.sh                   regenerates the other docs' Word copies (pandoc)
+docs/Project_Handover.md             handover: state and next steps, design decisions, research directions (+ .docx)
+docs/build_docs.sh                   regenerates Project_Handover.docx from its Markdown (pandoc)
 docs/images/sop/                     figures used by the SOP's Markdown mirror
 .github/workflows/release.yml        builds and releases KneeGoniometerGUI.exe on a v* tag
 ```
