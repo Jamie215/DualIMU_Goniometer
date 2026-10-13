@@ -84,10 +84,9 @@ docs/build_docs.sh                   regenerates the design-decisions and handov
 ## Housekeeping
 
 - No licence file — decide whether one is needed before sharing the code.
-- Tag the handed-over commit with a version tag (e.g. `git tag v1.0.0` then
-  `git push origin v1.0.0`). This references the firmware, software and documents
-  together, and the release workflow publishes `KneeGoniometerGUI.exe` on the
-  Releases page, which the SOP (§4.3) tells users to download. Until a tag is
-  pushed, the Releases page is empty.
+- **GUI release:** `v1.0.0` is published with `KneeGoniometerGUI.exe` on the
+  Releases page (tag on `main` at the handover). To publish a changed GUI, follow
+  "Releasing an updated GUI" in the README (also SOP §4.5): merge to `main`, push
+  the next version tag, and the release workflow builds and attaches the exe.
 - Regenerate the design-decisions and handover Word copies after editing their
   Markdown: `bash docs/build_docs.sh`. The SOP is edited in Word directly.

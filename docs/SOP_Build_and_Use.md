@@ -239,6 +239,48 @@ in the project folder and run the second line again
 macOS/Linux) to switch the workspace on, then type `python knee_gui.py`
 to start the GUI.
 
+## 4.5 Releasing an updated GUI (for developers)
+
+If you change the GUI’s code (`knee_gui.py` or
+`knee_collector_uart.py`), publish a new `KneeGoniometerGUI.exe` so that
+users get the change. The project builds the program automatically when
+a new version number (a “tag”) is added to the repository. This needs
+Git installed, a copy of the repository made with `git clone` (not the
+ZIP download from §4.2), and permission to change the repository on
+GitHub.
+
+1\. Check your change with the Python version (§4.4): run the two
+selftest lines and `python knee_gui.py --simulate`, and ideally record
+one session with the device.
+
+2\. Merge your change into the main branch of the repository.
+
+3\. Choose the next version number. Never reuse one; the Tags page of
+the repository lists those already used. Small fix: v1.0.1. New feature:
+v1.1.0. A change that affects how the recorded files look: v2.0.0.
+
+4\. Add the version tag to main and send it to GitHub, in a terminal in
+the project folder (replace v1.0.1 with your version):
+
+    git checkout main
+    git pull
+    git tag v1.0.1
+    git push origin v1.0.1
+
+5\. Open the repository’s **Actions** tab. After a few minutes the
+“Release Windows exe” run turns green and the new version, with
+`KneeGoniometerGUI.exe`, appears on the Releases page. Edit its notes to
+say what changed. If the run fails (red), no release is made: fix the
+problem and use a new version number.
+
+6\. Ask users to download the new program and replace their old file
+(§4.3).
+
+Changes to the board programs (the `.ino` files) are not part of the GUI
+program: anyone using them must load the new version onto both boards
+(§4.2). The full steps are in the README, under “Releasing an updated
+GUI”.
+
 # 5. Pre-session checklist
 
 1.  Both boards powered: the thigh (central) board by USB to the PC, the
