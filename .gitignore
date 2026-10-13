@@ -5,3 +5,6 @@ mag_cal.json
 .venv
 *.log
 docs/reference.docx
+build/
+dist/
+*.spec

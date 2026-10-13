@@ -116,6 +116,33 @@ The CSV is a superset of the CLI log (adds wall-clock and session time, the two
 inclinations, and the `phase` / `fill_mode` columns), so existing analysis still
 reads it.
 
+### Windows executable
+
+Download `KneeGoniometerGUI.exe` from the repo's **Releases** page. No Python
+install is needed. CSVs and diag logs are written to the **current working
+directory** (relative paths), which is the exe's own folder when you
+double-click it, so keep the exe somewhere writable (Desktop, Documents, a
+data folder), not `Program Files`. The exe is unsigned, so Windows SmartScreen
+may warn on first run: **More info -> Run anyway**.
+
+To publish a new release, push a version tag; the
+`.github/workflows/release.yml` workflow builds the exe with PyInstaller on a
+Windows runner and attaches it to the release:
+
+```
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+To build locally (on Windows):
+
+```
+pip install -r requirements.txt pyinstaller
+pyinstaller --onefile --windowed --name KneeGoniometerGUI knee_gui.py
+```
+
+The exe is written to `dist\KneeGoniometerGUI.exe`.
+
 ---
 
 ## How it works (the math)
