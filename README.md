@@ -554,6 +554,6 @@ analysis/diagnostics/parse_diag.py   diag log (# CDIAG / # PDIAG lines) -> CSVs 
 docs/SOP_Build_and_Use.docx          SOP: build, set up and run the device (Word master; .md mirror)
 docs/Project_Handover.md             handover: state and next steps, design decisions, research directions (+ .docx)
 docs/build_docs.sh                   regenerates Project_Handover.docx from its Markdown (pandoc)
-docs/images/sop/                     figures used by the SOP's Markdown mirror
+docs/images/                         figures for the SOP mirror (sop/) and the handover document (handover/, SVG sources)
 .github/workflows/release.yml        builds and releases KneeGoniometerGUI.exe on a v* tag
 ```

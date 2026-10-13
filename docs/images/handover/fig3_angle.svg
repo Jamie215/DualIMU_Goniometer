@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" font-family="Carlito, Calibri, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#404040"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="600" fill="#fff"/>
+
+  <!-- (a) zero pose -->
+  <text x="40" y="40" font-size="21" font-weight="bold" fill="#0B0B0B">(a) Zero pose: leg straight and still for 2 s</text>
+  <g stroke-linecap="round">
+    <line x1="250" y1="100" x2="250" y2="300" stroke="#EEDFCF" stroke-width="54"/>
+    <line x1="250" y1="300" x2="250" y2="490" stroke="#EEDFCF" stroke-width="42"/>
+  </g>
+  <circle cx="250" cy="100" r="8" fill="#7F7F7F"/><circle cx="250" cy="300" r="8" fill="#7F7F7F"/>
+  <rect x="236" y="160" width="28" height="56" rx="4" fill="#2E75B6"/>
+  <rect x="236" y="360" width="28" height="56" rx="4" fill="#ED7D31"/>
+  <g font-size="18" fill="#0B0B0B">
+    <text x="300" y="186">thigh: d<tspan font-size="13" dy="4">thigh</tspan><tspan dy="-4"> = gravity in the board</tspan></text>
+    <text x="300" y="210" fill="#404040">→ incl<tspan font-size="13" dy="4">thigh</tspan><tspan dy="-4"> = 0°</tspan></text>
+    <text x="300" y="386">shank: d<tspan font-size="13" dy="4">shank</tspan><tspan dy="-4"> = gravity in the board</tspan></text>
+    <text x="300" y="410" fill="#404040">→ incl<tspan font-size="13" dy="4">shank</tspan><tspan dy="-4"> = 0°</tspan></text>
+    <text x="40" y="550" font-size="19">knee = 0° − 0° = <tspan font-weight="bold">0°</tspan></text>
+  </g>
+  <line x1="120" y1="130" x2="120" y2="270" stroke="#404040" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="104" y="210" font-size="20" font-style="italic" fill="#404040" text-anchor="end">g</text>
+
+  <line x1="590" y1="30" x2="590" y2="570" stroke="#D9D9D9" stroke-width="2"/>
+
+  <!-- (b) flexed -->
+  <text x="630" y="40" font-size="21" font-weight="bold" fill="#0B0B0B">(b) Flexed</text>
+  <g stroke-linecap="round">
+    <line x1="820" y1="100" x2="948.6" y2="253.2" stroke="#EEDFCF" stroke-width="54"/>
+    <line x1="948.6" y1="253.2" x2="853.6" y2="417.7" stroke="#EEDFCF" stroke-width="42"/>
+  </g>
+  <line x1="820" y1="100" x2="820" y2="300" stroke="#A6A6A6" stroke-width="2" stroke-dasharray="6 6"/>
+  <line x1="948.6" y1="253.2" x2="948.6" y2="440" stroke="#A6A6A6" stroke-width="2" stroke-dasharray="6 6"/>
+  <line x1="948.6" y1="253.2" x2="1025.7" y2="345.1" stroke="#A6A6A6" stroke-width="2" stroke-dasharray="3 5"/>
+  <circle cx="820" cy="100" r="8" fill="#7F7F7F"/><circle cx="948.6" cy="253.2" r="8" fill="#7F7F7F"/>
+  <rect x="-14" y="-28" width="28" height="56" rx="4" fill="#2E75B6" transform="translate(866,155) rotate(-40)"/>
+  <rect x="-14" y="-28" width="28" height="56" rx="4" fill="#ED7D31" transform="translate(915,311) rotate(30)"/>
+
+  <path d="M820,230 A130,130 0 0 0 903.6,199.6" fill="none" stroke="#1F4E79" stroke-width="3"/>
+  <line x1="745" y1="250" x2="836" y2="229" stroke="#1F4E79" stroke-width="1.2"/>
+  <text x="630" y="250" font-size="18" fill="#1F4E79">incl<tspan font-size="13" dy="4">thigh</tspan><tspan dy="-4"> = +40°</tspan></text>
+  <text x="630" y="272" font-size="15" fill="#595959">(tilted forward)</text>
+
+  <path d="M948.6,373.2 A120,120 0 0 1 888.6,357.1" fill="none" stroke="#C55A11" stroke-width="3"/>
+  <line x1="745" y1="410" x2="900" y2="365" stroke="#C55A11" stroke-width="1.2"/>
+  <text x="630" y="410" font-size="18" fill="#C55A11">incl<tspan font-size="13" dy="4">shank</tspan><tspan dy="-4"> = −30°</tspan></text>
+  <text x="630" y="432" font-size="15" fill="#595959">(tilted backward)</text>
+
+  <path d="M980.7,291.5 A50,50 0 0 1 923.6,296.5" fill="none" stroke="#0B0B0B" stroke-width="3"/>
+  <text x="1000" y="320" font-size="20" font-weight="bold" fill="#0B0B0B">70°</text>
+
+  <line x1="1130" y1="130" x2="1130" y2="270" stroke="#404040" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="1114" y="210" font-size="20" font-style="italic" fill="#404040" text-anchor="end">g</text>
+  <text x="1040" y="490" font-size="16" fill="#7F7F7F">anterior →</text>
+
+  <text x="630" y="550" font-size="19" fill="#0B0B0B">knee = incl<tspan font-size="14" dy="4">thigh</tspan><tspan dy="-4"> − incl</tspan><tspan font-size="14" dy="4">shank</tspan><tspan dy="-4"> = 40° − (−30°) = </tspan><tspan font-weight="bold">70°</tspan></text>
+</svg>
