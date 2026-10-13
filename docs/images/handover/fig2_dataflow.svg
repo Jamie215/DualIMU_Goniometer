@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1650" height="807" viewBox="0 0 1650 807" font-family="Carlito, Calibri, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1650" height="838" viewBox="0 0 1650 838" font-family="Carlito, Calibri, sans-serif">
   <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#404040"/></marker></defs>
-  <rect width="1650" height="807" fill="#fff"/>
+  <rect width="1650" height="838" fill="#fff"/>
   <rect x="30" y="30" width="430" height="514" rx="12" fill="#FBE5D6" stroke="#C55A11" stroke-width="2.5"/>
   <path d="M30,94 L30,42 Q30,30 42,30 L448,30 Q460,30 460,42 L460,94 Z" fill="#ED7D31"/>
   <text x="245.0" y="73" font-size="29" font-weight="bold" fill="#fff" text-anchor="middle">Shank board (peripheral)</text>
   <text x="56" y="140" font-size="26" fill="#0B0B0B" xml:space="preserve">1. Reads its motion sensor</text>
   <text x="56" y="180" font-size="26" fill="#0B0B0B" xml:space="preserve">2. Corrects the sensor's axes</text>
-  <text x="56" y="220" font-size="26" fill="#0B0B0B" xml:space="preserve">3. Filter → orientation</text>
+  <text x="56" y="220" font-size="26" fill="#0B0B0B" xml:space="preserve">3. Estimates its orientation</text>
   <text x="56" y="260" font-size="26" fill="#0B0B0B" xml:space="preserve">4. Drops impossible readings</text>
   <text x="56" y="300" font-size="26" fill="#0B0B0B" xml:space="preserve">5. Sends a message at 50 Hz</text>
-  <text x="56" y="520" font-size="22" fill="#595959">Runs only while it gets the keepalive</text>
+  <text x="56" y="520" font-size="24" fill="#595959">Runs only while it gets the keepalive</text>
   <rect x="610" y="30" width="430" height="514" rx="12" fill="#DEEBF7" stroke="#1F4E79" stroke-width="2.5"/>
   <path d="M610,94 L610,42 Q610,30 622,30 L1028,30 Q1040,30 1040,42 L1040,94 Z" fill="#2E75B6"/>
   <text x="825.0" y="73" font-size="29" font-weight="bold" fill="#fff" text-anchor="middle">Thigh board (central)</text>
@@ -17,24 +17,24 @@
   <text x="636" y="180" font-size="26" fill="#0B0B0B" xml:space="preserve">    own sensor</text>
   <text x="636" y="220" font-size="26" fill="#0B0B0B" xml:space="preserve">2. Keeps the newest good</text>
   <text x="636" y="260" font-size="26" fill="#0B0B0B" xml:space="preserve">    shank message</text>
-  <text x="636" y="300" font-size="26" fill="#0B0B0B" xml:space="preserve">3. Shank message > 30 ms old</text>
-  <text x="636" y="340" font-size="26" fill="#0B0B0B" xml:space="preserve">    → shank marked missing</text>
+  <text x="636" y="300" font-size="26" fill="#0B0B0B" xml:space="preserve">3. Marks the shank missing if</text>
+  <text x="636" y="340" font-size="26" fill="#0B0B0B" xml:space="preserve">    its message is > 30 ms old</text>
   <text x="636" y="380" font-size="26" fill="#0B0B0B" xml:space="preserve">4. Combines thigh + shank</text>
   <text x="636" y="420" font-size="26" fill="#0B0B0B" xml:space="preserve">    data into one line</text>
   <text x="636" y="460" font-size="26" fill="#0B0B0B" xml:space="preserve">5. Sends it to the PC at 50 Hz</text>
-  <text x="636" y="520" font-size="22" fill="#595959">Collects only while the PC is connected</text>
+  <text x="636" y="520" font-size="24" fill="#595959">Collects only while the PC is connected</text>
   <rect x="1190" y="30" width="430" height="514" rx="12" fill="#EDEDED" stroke="#404040" stroke-width="2.5"/>
   <path d="M1190,94 L1190,42 Q1190,30 1202,30 L1608,30 Q1620,30 1620,42 L1620,94 Z" fill="#595959"/>
   <text x="1405.0" y="73" font-size="29" font-weight="bold" fill="#fff" text-anchor="middle">PC (GUI)</text>
   <text x="1216" y="140" font-size="26" fill="#0B0B0B" xml:space="preserve">1. Fills short shank gaps</text>
-  <text x="1216" y="180" font-size="26" fill="#0B0B0B" xml:space="preserve">2. Calibration in two stages:</text>
+  <text x="1216" y="180" font-size="26" fill="#0B0B0B" xml:space="preserve">2. Calibrates in two stages:</text>
   <text x="1216" y="220" font-size="26" fill="#0B0B0B" xml:space="preserve">    zeroing, then sweep</text>
   <text x="1216" y="260" font-size="26" fill="#0B0B0B" xml:space="preserve">3. Computes the knee angle</text>
   <text x="1216" y="300" font-size="26" fill="#0B0B0B" xml:space="preserve">    (thigh tilt − shank tilt)</text>
   <text x="1216" y="340" font-size="26" fill="#0B0B0B" xml:space="preserve">4. Shows a live plot</text>
   <text x="1216" y="380" font-size="26" fill="#0B0B0B" xml:space="preserve">5. Saves every sample (CSV)</text>
-  <text x="1216" y="520" font-size="22" fill="#595959">Plus a diagnostics log</text>
-  <g font-size="22" fill="#404040" text-anchor="middle">
+  <text x="1216" y="520" font-size="24" fill="#595959">Also saves a diagnostics log</text>
+  <g font-size="24" fill="#404040" text-anchor="middle">
   <line x1="464" y1="164" x2="604" y2="164" stroke="#404040" stroke-width="3.5" marker-end="url(#ah)"/>
   <text x="535.0" y="150" font-weight="bold">Wire</text>
   <text x="535.0" y="194">shank data</text>
@@ -48,19 +48,19 @@
   <text x="1115.0" y="270">connection</text>
   <text x="1115.0" y="314">open = collect</text>
   </g>
-  <text x="30" y="614" font-size="27" font-weight="bold" fill="#0B0B0B">Message from the shank board (30 bytes, 50 Hz)</text>
-  <rect x="30" y="632" width="170" height="76" fill="#ED7D31" stroke="#fff" stroke-width="3"/>
-  <text x="115.0" y="666" font-size="24" font-weight="bold" fill="#fff" text-anchor="middle">start marker</text>
-  <text x="115.0" y="694" font-size="20" fill="#fff" text-anchor="middle">1 byte</text>
-  <rect x="200" y="632" width="560" height="76" fill="#F4B183" stroke="#fff" stroke-width="3"/>
-  <text x="480.0" y="666" font-size="24" font-weight="bold" fill="#0B0B0B" text-anchor="middle">orientation (quaternion)</text>
-  <text x="480.0" y="694" font-size="20" fill="#0B0B0B" text-anchor="middle">16 bytes</text>
-  <rect x="760" y="632" width="470" height="76" fill="#F8CBAD" stroke="#fff" stroke-width="3"/>
-  <text x="995.0" y="666" font-size="24" font-weight="bold" fill="#0B0B0B" text-anchor="middle">raw accelerometer</text>
-  <text x="995.0" y="694" font-size="20" fill="#0B0B0B" text-anchor="middle">12 bytes</text>
-  <rect x="1230" y="632" width="170" height="76" fill="#ED7D31" stroke="#fff" stroke-width="3"/>
-  <text x="1315.0" y="666" font-size="24" font-weight="bold" fill="#fff" text-anchor="middle">checksum</text>
-  <text x="1315.0" y="694" font-size="20" fill="#fff" text-anchor="middle">1 byte</text>
-  <text x="30" y="752" font-size="22" fill="#595959">The thigh board finds each message by its start marker and discards any that fail the checksum,</text>
-  <text x="30" y="782" font-size="22" fill="#595959">so a corrupted byte costs one sample, not the whole stream.</text>
+  <text x="30" y="620" font-size="31" font-weight="bold" fill="#0B0B0B">Message from the shank board (30 bytes, 50 Hz)</text>
+  <rect x="30" y="638" width="210" height="90" fill="#ED7D31" stroke="#fff" stroke-width="3"/>
+  <text x="135.0" y="678" font-size="28" font-weight="bold" fill="#fff" text-anchor="middle">start marker</text>
+  <text x="135.0" y="712" font-size="24" fill="#fff" text-anchor="middle">1 byte</text>
+  <rect x="240" y="638" width="540" height="90" fill="#F4B183" stroke="#fff" stroke-width="3"/>
+  <text x="510.0" y="678" font-size="28" font-weight="bold" fill="#0B0B0B" text-anchor="middle">orientation (quaternion)</text>
+  <text x="510.0" y="712" font-size="24" fill="#0B0B0B" text-anchor="middle">16 bytes</text>
+  <rect x="780" y="638" width="460" height="90" fill="#F8CBAD" stroke="#fff" stroke-width="3"/>
+  <text x="1010.0" y="678" font-size="28" font-weight="bold" fill="#0B0B0B" text-anchor="middle">raw accelerometer</text>
+  <text x="1010.0" y="712" font-size="24" fill="#0B0B0B" text-anchor="middle">12 bytes</text>
+  <rect x="1240" y="638" width="210" height="90" fill="#ED7D31" stroke="#fff" stroke-width="3"/>
+  <text x="1345.0" y="678" font-size="28" font-weight="bold" fill="#fff" text-anchor="middle">checksum</text>
+  <text x="1345.0" y="712" font-size="24" fill="#fff" text-anchor="middle">1 byte</text>
+  <text x="30" y="774" font-size="27" fill="#595959">The thigh board finds each message by its start marker and discards any that fail the checksum,</text>
+  <text x="30" y="810" font-size="27" fill="#595959">so a corrupted byte costs one sample, not the whole stream.</text>
 </svg>
