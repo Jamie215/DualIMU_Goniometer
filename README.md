@@ -9,6 +9,27 @@ link, and the central merges both segments and streams them to a PC, where
 The design goal is a **placement-independent** angle: you should not have to mount
 the boards in a precise, repeatable orientation.
 
+## Getting started
+
+**Using the device (collecting data).** Download `KneeGoniometerGUI.exe` (Windows)
+from the [latest release](https://github.com/Jamie215/DualIMU_Goniometer/releases/latest)
+and follow the SOP, which covers building the device, flashing the boards, placing
+the sensors and running a session:
+[`docs/SOP_Build_and_Use.docx`](docs/SOP_Build_and_Use.docx) (master copy;
+a read-only Markdown mirror is [`docs/SOP_Build_and_Use.md`](docs/SOP_Build_and_Use.md)).
+No Python is needed.
+
+**Changing the code.**
+- GUI / angle math (Python): set up Python as in [Live GUI](#live-gui-knee_guipy),
+  then publish a new exe as in [Releasing an updated GUI](#releasing-an-updated-gui).
+- Firmware: see [Quick start](#quick-start-developers-command-line) and the
+  [wire protocol](#data-format--wire-protocol); reflash **both** boards after a change.
+
+**Background.** [`docs/HANDOVER.md`](docs/HANDOVER.md) (current state, open issues,
+next steps), [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md) (why it is built
+this way), and the Preliminary Stationary Test Report
+(`analysis/static_test/Static_Stability_Test_Report.docx`).
+
 ---
 
 ## Hardware & wiring
@@ -31,14 +52,19 @@ the boards in a precise, repeatable orientation.
 
 ---
 
-## Quick start
+## Quick start (developers, command line)
+
+For data collection, use the GUI (see [Getting started](#getting-started)); this
+section is the command-line route used during development.
+
 
 1. **Flash** `central_imu/central_imu.ino` to the thigh board and
    `peripheral_imu/peripheral_imu.ino` to the shank board (Arduino IDE, board = "Arduino
    Nano 33 BLE", library **Arduino_BMI270_BMM150**). Confirm each reports
    *Done uploading*.
-2. On power-up / reset, **keep both boards still for ~4 s** — they measure gyro
-   bias then. The central prints `# central gyro bias dps: ...`.
+2. When a collection starts (the central's USB port is opened by the collector or
+   GUI), **keep both boards still for ~4 s** — they measure gyro bias then. The
+   central prints `# central gyro bias dps: ...`.
 3. **Sanity check** the link and signal:
    ```
    python knee_collector_uart.py --port /dev/ttyACM0 --monitor
@@ -62,7 +88,9 @@ the boards in a precise, repeatable orientation.
 ## Live GUI (`knee_gui.py`)
 
 For a testing / proof-of-concept session there is a Tkinter + Matplotlib front
-end over the same angle math. It is the easiest way to run a collection:
+end over the same angle math. It is the easiest way to run a collection. Most
+users run it as the Windows executable (see [below](#windows-executable)); to run
+or change it from source:
 
 ```
 pip install -r requirements.txt
@@ -82,8 +110,9 @@ What it adds over the CLI:
   `t_wall_iso` is when the PC received the line. (Earlier versions wrote rows on a
   PC-side 20 ms timer, which repeated ~20 % of samples and skipped others.)
 - **Obvious calibration** — a colour-coded banner drives the phases with a live
-  countdown: amber **ZEROING** (hold straight & still) → amber **SWEEP** (bend
-  knee + hip, with a live shank-tilt readout) → green **RUNNING**.
+  countdown: amber **CALIBRATING - HOLD STILL** (straight leg) → amber
+  **CALIBRATING - SWEEP** (bend knee + hip, with a live shank-tilt readout) →
+  green **RUNNING** (phases `zeroing` / `sweep` / `running` in the CSV).
 - **Plots** — knee angle (primary), the two segment inclinations it is built
   from, and the link RTT. While collecting they show a rolling window; when you
   **Stop collecting** they switch to the **entire session** (not just the last
@@ -110,23 +139,57 @@ reads it.
 
 ### Windows executable
 
-Download `KneeGoniometerGUI.exe` from the repo's **Releases** page. No Python
-install is needed. CSVs and diag logs are written to the **current working
+Download `KneeGoniometerGUI.exe` from the
+[latest release](https://github.com/Jamie215/DualIMU_Goniometer/releases/latest).
+No Python install is needed. CSVs and diag logs are written to the **current working
 directory** (relative paths), which is the exe's own folder when you
 double-click it, so keep the exe somewhere writable (Desktop, Documents, a
 data folder), not `Program Files`. The exe is unsigned, so Windows SmartScreen
 may warn on first run: **More info -> Run anyway**.
 
-To publish a new release, push a version tag; the
-`.github/workflows/release.yml` workflow builds the exe with PyInstaller on a
-Windows runner and attaches it to the release:
+### Releasing an updated GUI
 
-```
-git tag v1.0.0
-git push origin v1.0.0
-```
+The exe is built and published by `.github/workflows/release.yml` whenever a
+version tag (`v*`) is pushed: on a Windows runner it installs `requirements.txt`
+and PyInstaller, runs `python knee_gui.py --selftest` (a failure stops the
+release), builds the exe, and creates a GitHub Release with it attached. After
+changing `knee_gui.py` or `knee_collector_uart.py` (which the GUI imports):
 
-To build locally (on Windows):
+1. **Check locally** on your branch:
+   ```
+   python knee_collector_uart.py --selftest
+   python knee_gui.py --selftest
+   python knee_gui.py --simulate
+   ```
+   and, ideally, one real session with the hardware.
+2. **Merge into `main`** (pull request).
+3. **Pick the next version.** Never reuse a tag; `git tag --list` shows the ones
+   used. Bug fix: `v1.0.1`; new feature: `v1.1.0`; a change that breaks existing
+   users or analysis (e.g. CSV columns change): `v2.0.0`.
+4. **Tag `main` and push the tag:**
+   ```
+   git checkout main
+   git pull
+   git tag v1.0.1
+   git push origin v1.0.1
+   ```
+5. **Watch the Actions tab** (a few minutes). When the run is green, the
+   [Releases](https://github.com/Jamie215/DualIMU_Goniometer/releases) page shows
+   the new version with `KneeGoniometerGUI.exe`. Edit its notes to say what
+   changed in plain words.
+6. **Tell users** to download the new exe and replace their old file (SOP §4.3).
+
+If the run fails, no release is created. Fix the problem on `main`, then push a
+new tag (e.g. `v1.0.2`), or delete the failed tag and push it again:
+`git push --delete origin v1.0.1`, `git tag -d v1.0.1`, then repeat step 4.
+
+The firmware is not part of the exe. If you change the `.ino` files, reflash
+**both** boards (SOP §4.2) and say so in the release notes.
+
+"Run workflow" on the Actions tab (manual run) only builds the exe as a
+downloadable artifact for testing; it does not create a release.
+
+To build locally instead (on Windows):
 
 ```
 pip install -r requirements.txt pyinstaller
@@ -457,8 +520,11 @@ shank board at a right angle to the thigh board reads ~90°.
 ## Known limitations & next steps
 
 - **Sagittal plane only** — see the trade-off above.
-- **Validate against a protractor** — tape both boards across a hinge, zero
-  straight, sweep the range, and check the reading at known angles.
+- **Validate against a protractor** — a preliminary 45°/90° rig check read
+  45.0° / 89.0° (see the stationary test report); a controlled, repeated test
+  with **both** nodes swept during calibration is still needed.
+- **Faulty board** — one board's BMI270 fails after 20–40 min; replace it before
+  further testing (see `docs/HANDOVER.md`).
 - **Fast dynamic capture** — the gyro-fused gravity direction carries through
   motion; if very fast reps still lag or overshoot, tune the filter (`TWO_KP`)
   and the soft gate (`ACC_TRUST_FULL_G` / `ACC_TRUST_ZERO_G`) on both boards.
@@ -477,8 +543,18 @@ calibration, wireless (BLE) links, and scaling to multiple nodes / joints — se
 ## Files
 
 ```
-central_imu/central_imu.ino   thigh board: 6-DOF filter, reads peripheral stream, streams to PC
-peripheral_imu/peripheral_imu.ino     shank board: 6-DOF filter, streams packets over UART
-knee_collector_uart.py      PC collector: calibration, angle math, CSV, --selftest
+central_imu/central_imu.ino          thigh board: 6-DOF filter, reads peripheral stream, streams to PC
+peripheral_imu/peripheral_imu.ino    shank board: 6-DOF filter, streams packets over UART
+knee_collector_uart.py               PC collector: calibration, angle math, CSV, --selftest
+knee_gui.py                          live GUI over the same math: guided calibration, plots, auto-save
+requirements.txt                     Python dependencies (collection, GUI, analysis)
+analysis/static_test/                stationary test scripts, figures, report (.docx) and FINDINGS.md
 analysis/diagnostics/parse_diag.py   diag log (# CDIAG / # PDIAG lines) -> CSVs + per-minute summary
+docs/HANDOVER.md                     transition summary: state, open issues, next steps
+docs/SOP_Build_and_Use.docx          SOP: build, set up and run the device (Word master; .md mirror)
+docs/DESIGN_DECISIONS.md             compiled design decisions and rationale
+docs/areas_to_explore.md             research directions (magnetometer, absolute angle, BLE, multi-node)
+docs/build_docs.sh                   regenerates the other docs' Word copies (pandoc)
+docs/images/sop/                     figures used by the SOP's Markdown mirror
+.github/workflows/release.yml        builds and releases KneeGoniometerGUI.exe on a v* tag
 ```

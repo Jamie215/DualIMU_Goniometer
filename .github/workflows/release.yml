@@ -1,3 +1,19 @@
+# Builds knee_gui.py into KneeGoniometerGUI.exe and publishes it as a GitHub Release.
+#
+# To release an updated GUI (full steps: README.md, "Releasing an updated GUI"):
+#   1. Check on your branch: python knee_collector_uart.py --selftest
+#                            python knee_gui.py --selftest
+#                            python knee_gui.py --simulate
+#   2. Merge the change into main.
+#   3. Tag main with the next unused version and push the tag, e.g.
+#        git checkout main && git pull
+#        git tag v1.0.1 && git push origin v1.0.1
+#      (git tag --list shows versions already used; never reuse one.)
+#   4. This workflow runs (Actions tab). When it is green, the release with the exe
+#      is on the Releases page; edit its notes to say what changed.
+# If the self-test or build fails, no release is created: fix main and push a new tag.
+# A manual "Run workflow" only builds the exe as an artifact; it does not release.
+
 name: Release Windows exe
 
 on:
