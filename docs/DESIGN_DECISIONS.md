@@ -349,6 +349,25 @@ limit, accepted for upright knee flexion.
 firmware (not an 18-field `D` line), or a dead peripheral (all shank samples
 invalid). The CLI and GUI share it.
 
+## 7.6 Windows executable, released on version tags
+
+- **Decision:** Ship the GUI to operators as a single Windows program,
+  `KneeGoniometerGUI.exe`, built with PyInstaller (one file, windowed) by a
+  GitHub Actions workflow. Pushing a `v*` tag runs the self-test, builds the exe
+  and publishes it on the Releases page.
+- **Why:** People collecting data should not need to install Python or use a
+  terminal. Building in CI from a tag ties each exe to a known commit and keeps
+  the build repeatable; the self-test step stops a broken GUI from being released.
+- **Alternatives:** Running from source for everyone (too much setup for
+  operators); building the exe by hand on a developer's PC (not repeatable, easy
+  to ship uncommitted changes).
+- **Trade-offs:** Windows only (macOS/Linux use the Python version); the exe is
+  unsigned, so Windows SmartScreen warns on first run; recordings are saved next
+  to the exe, so it must live in a writable folder.
+- **Evidence:** `572b164` (`.github/workflows/release.yml`); release `v1.0.0`.
+- **Status:** In use. How to publish a new version: README, "Releasing an
+  updated GUI" (also SOP Appendix B).
+
 # 8. Testing and validation
 
 ## 8.1 Preliminary stationary testing (Sept 2026)
@@ -406,3 +425,5 @@ Detailed in `docs/areas_to_explore.md`.
 | Sep 21–22 | Central/peripheral rename; research directions documented | `d9ccd14`, `170580c` |
 | Sep 23–24 | Stationary testing; diagnostics; rate fix; sensor-fault guard | `99a2446`, `72943ba`, `e02ae6d`, `8a9aaf4` |
 | Sep–Oct | Preliminary Stationary Test Report | `70815cf`, `38724bf` |
+| Oct 9–13 | Handover docs: SOP, design decisions, handover summary | this branch |
+| Oct 13 | Windows exe build workflow; release v1.0.0 | `572b164` |

@@ -13,7 +13,11 @@ what is missing, and what to do next.
   central, shank = peripheral) in basic cases, joined by soldered UART wires,
   each powered over USB; the central streams to a PC at a true 50 Hz.
 - **Software complete for PoC testing.** Live GUI with guided calibration and
-  auto-saved sessions; CLI collector; self-tests pass.
+  auto-saved sessions; CLI collector; self-tests pass. The GUI is released as a
+  Windows program, `KneeGoniometerGUI.exe` (v1.0.0, Releases page).
+- **SOP finalised** (`docs/SOP_Build_and_Use.docx`, version 1.0): build, setup,
+  sessions and troubleshooting for operators; Python setup and releasing a new
+  GUI version are in its appendices.
 - **Preliminary stationary testing done.** ≈0.01–0.02° noise, ≈ −0.001 °/min
   drift on healthy hardware; 45°/90° rigs read 45.0°/89.0° (preliminary).
 - **Not yet done:** dynamic / on-body testing, both-node calibration, a
@@ -86,7 +90,7 @@ docs/build_docs.sh                   regenerates the design-decisions and handov
 - No licence file — decide whether one is needed before sharing the code.
 - **GUI release:** `v1.0.0` is published with `KneeGoniometerGUI.exe` on the
   Releases page (tag on `main` at the handover). To publish a changed GUI, follow
-  "Releasing an updated GUI" in the README (also SOP §4.5): merge to `main`, push
+  "Releasing an updated GUI" in the README (also SOP Appendix B): merge to `main`, push
   the next version tag, and the release workflow builds and attaches the exe.
 - Regenerate the design-decisions and handover Word copies after editing their
   Markdown: `bash docs/build_docs.sh`. The SOP is edited in Word directly.

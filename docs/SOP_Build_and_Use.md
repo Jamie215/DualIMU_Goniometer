@@ -6,6 +6,9 @@
 > `pandoc docs/SOP_Build_and_Use.docx -t gfm --extract-media=docs/images/sop -o docs/SOP_Build_and_Use.md`
 > (and change `docs/images/` to `images/` in the image links).
 
+*Version 1.0, October 2026. Matches GUI program v1.0.0 and the board
+programs released with it.*
+
 # 1. Purpose and scope
 
 This SOP describes how to build the dual-IMU knee goniometer prototype,
@@ -70,7 +73,7 @@ Figure 1. MSK-IF version research prototype
 | 3       | Inter-board wires                   | Two signal wires + one shared ground, soldered.                                                                                                                             |
 | 2       | USB cable (micro-USB to PC/charger) | One for each board. Must be **data** cables — some USB cables only charge, and the PC will not see the board. The thigh (central) board’s cable carries the data to the PC. |
 | 1       | USB power for the peripheral        | Second PC USB port, USB charger, or power bank                                                                                                                              |
-| 1       | PC                                  | Windows PC for the ready-made GUI program. macOS/Linux only via the Python version (Python 3.8+, §4.4).                                                                     |
+| 1       | PC                                  | Windows PC for the ready-made GUI program. macOS/Linux only via the Python version (Python 3.8+, Appendix A).                                                               |
 | 2       | Mounting to the leg                 | Elastic straps                                                                                                                                                              |
 
 > Note: If using the research prototype developed by MSK-IF: the motion
@@ -144,17 +147,17 @@ the folder to your preferred location. Load (“flash”) both boards from
 the same version of the files.
 
 1.  Connect the thigh (central) board to the PC by USB. In the Arduino
-    IDE, open `central_imu/central_imu.ino` from the project folder.
+    IDE, open `central_imu``/``central_imu.ino` from the project folder.
     Select the board **Arduino Nano 33 BLE** and its port (**Tools →
     Port**), then click **Upload** (the → arrow). Wait for the message
     *Done uploading*.
 2.  Connect the shank (peripheral) board and repeat with
-    `peripheral_imu/peripheral_imu.ino`. When it restarts, its small
+    `peripheral_imu``/``peripheral_imu.ino`. When it restarts, its small
     **orange** light flashes 3 times quickly and then blinks slowly.
     (The green light is just the power light and is always on.)
 3.  Optional check: with the thigh board connected, open **Tools →
     Serial Monitor** and set it to 115200 baud. A line starting with
-    “`# CENTRAL fw:`” means the program is loaded. Close the Serial
+    “`# CENTRAL ``fw``:`” means the program is loaded. Close the Serial
     Monitor afterwards — only one program can use the board’s connection
     at a time.
 
@@ -179,7 +182,7 @@ Releases](https://github.com/Jamie215/DualIMU_Goniometer/releases)).
 Under Assets, click the file name.
 
 2\. Make a folder for it somewhere you can write to, for example
-`Documents\KneeGoniometer`, and move the file there. Recordings are
+`Documents\``KneeGoniometer`, and move the file there. Recordings are
 saved in the same folder as the program, so do not put it in Program
 Files.
 
@@ -190,107 +193,18 @@ info**, then **Run anyway**. The program takes a few seconds to open.
 To update the program later, download the newer release and replace the
 old file.
 
-## 4.4 Python version (optional)
-
-Only needed if you want to change the GUI’s code, use the command-line
-tools (§7.1), or run the GUI on macOS/Linux. The GUI is written in
-Python; this step installs Python and the add-ons it needs, once per PC.
-
-1\. Install Python 3.8 or newer from python.org. On Windows, tick “Add
-Python to PATH” on the first screen of the installer. (On Linux, also
-install the `python3-tk` package.)
-
-2\. Open a terminal in the project folder (the unzipped folder that
-contains `knee_gui.py`). On Windows: open the folder in File Explorer,
-click the address bar, type `cmd` and press Enter. On macOS: right-click
-the folder in Finder → New Terminal at Folder.
-
-3\. Type the commands below one line at a time, pressing Enter after
-each. Use the set for your computer. **On Windows (Command Prompt):**
-
-    python -m venv .venv
-    .venv\Scripts\activate
-    pip install -r requirements.txt
-    python knee_collector_uart.py --selftest
-    python knee_gui.py --selftest
-    python knee_gui.py --simulate
-
-**On macOS / Linux (Terminal):**
-
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
-    python knee_collector_uart.py --selftest
-    python knee_gui.py --selftest
-    python knee_gui.py --simulate
-
-What the commands do: the first line creates a private Python workspace
-for this project (a “virtual environment”) and the second switches it on
-— the start of the line then shows **(.venv)**. The `pip install` line
-downloads the add-ons the program needs; this can take a few minutes.
-The two *selftest* lines check the installation without any hardware:
-they should end with “Self-test PASSED.” and “knee_gui self-test
-PASSED.”. The last line opens the GUI with made-up data so you can
-practise; close its window when done.
-
-**Next time:** you do not repeat the installation. Just open a terminal
-in the project folder and run the second line again
-(`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on
-macOS/Linux) to switch the workspace on, then type `python knee_gui.py`
-to start the GUI.
-
-## 4.5 Releasing an updated GUI (for developers)
-
-If you change the GUI’s code (`knee_gui.py` or
-`knee_collector_uart.py`), publish a new `KneeGoniometerGUI.exe` so that
-users get the change. The project builds the program automatically when
-a new version number (a “tag”) is added to the repository. This needs
-Git installed, a copy of the repository made with `git clone` (not the
-ZIP download from §4.2), and permission to change the repository on
-GitHub.
-
-1\. Check your change with the Python version (§4.4): run the two
-selftest lines and `python knee_gui.py --simulate`, and ideally record
-one session with the device.
-
-2\. Merge your change into the main branch of the repository.
-
-3\. Choose the next version number. Never reuse one; the Tags page of
-the repository lists those already used. Small fix: v1.0.1. New feature:
-v1.1.0. A change that affects how the recorded files look: v2.0.0.
-
-4\. Add the version tag to main and send it to GitHub, in a terminal in
-the project folder (replace v1.0.1 with your version):
-
-    git checkout main
-    git pull
-    git tag v1.0.1
-    git push origin v1.0.1
-
-5\. Open the repository’s **Actions** tab. After a few minutes the
-“Release Windows exe” run turns green and the new version, with
-`KneeGoniometerGUI.exe`, appears on the Releases page. Edit its notes to
-say what changed. If the run fails (red), no release is made: fix the
-problem and use a new version number.
-
-6\. Ask users to download the new program and replace their old file
-(§4.3).
-
-Changes to the board programs (the `.ino` files) are not part of the GUI
-program: anyone using them must load the new version onto both boards
-(§4.2). The full steps are in the README, under “Releasing an updated
-GUI”.
-
 # 5. Pre-session checklist
 
-1.  Both boards powered: the thigh (central) board by USB to the PC, the
+1.  The GUI program `KneeGoniometerGUI.exe` is downloaded to its own
+    folder (§4.3).
+2.  Both boards powered: the thigh (central) board by USB to the PC, the
     shank (peripheral) board by its own USB power.
-2.  The shank board’s orange light blinks slowly (standby, waiting to
+3.  The shank board’s orange light blinks slowly (standby, waiting to
     start).
-3.  The wires between the boards are intact, with no strain on the
+4.  The wires between the boards are intact, with no strain on the
     solder joints.
-4.  The correct (non-faulty) boards are fitted.
-5.  The Arduino Serial Monitor, and any other program using the thigh
+5.  The correct (non-faulty) boards are fitted.
+6.  The Arduino Serial Monitor, and any other program using the thigh
     board’s connection, is closed.
 
 # 6. Placing the sensors on the leg
@@ -317,9 +231,10 @@ GUI”.
 # 7. Running a session (GUI — recommended)
 
 1.  Start the GUI: double-click `KneeGoniometerGUI.exe` (§4.3). (Python
-    version: see §4.4, “Next time”.) The GUI checks each USB port for a
-    few seconds and picks the thigh board: the Port box shows an entry
-    ending in **\[central OK …\]**. If it does not, click **Rescan**.
+    version: see Appendix A, “Next time”.) The GUI checks each USB port
+    for a few seconds and picks the thigh board: the Port box shows an
+    entry ending in **\[central OK …\]**. If it does not, click
+    **Rescan**.
 2.  Click **Connect**. This switches both boards on: the thigh board’s
     orange light turns on and the shank board’s orange light starts
     blinking quickly. Keep both boards still for about 4 seconds while
@@ -386,7 +301,7 @@ Figure 7. After Stop collecting — the whole session is shown for review
 continuous line over short gaps in the data; *Gap (points)* shows each
 gap. This only changes how the data points are plotted in the chart.
 
-## 7.1 Command-line alternative (optional, Python version only)
+## 7.1 Command-line alternative (optional, Python version only, Appendix A)
 
     python knee_collector_uart.py --port COM5 --monitor
     python knee_collector_uart.py --port COM5 --out trial1.csv
@@ -394,10 +309,10 @@ gap. This only changes how the data points are plotted in the chart.
 The first command shows a live check of the link and the board tilts;
 the second records a session to `trial1.csv`. Replace COM5 with the
 thigh board’s port (`COMx` on Windows, `/dev/ttyACM0` on Linux,
-`/dev/cu.usbmodem…` on macOS). To find it, look in the Arduino IDE under
-**Tools → Port**, or in the GUI’s Port box. The command-line program
-walks through the same hold-still (2 s) and sweep (6 s) steps;
-`--cal-seconds` and `--sweep-seconds` change their length.
+`/dev/``cu.usbmodem``…` on macOS). To find it, look in the Arduino IDE
+under **Tools → Port**, or in the GUI’s Port box. The command-line
+program walks through the same hold-still (2 s) and sweep (6 s) steps;
+`--``cal``-seconds` and `--sweep-seconds` change their length.
 
 # 8. Data handling
 
@@ -417,7 +332,7 @@ walks through the same hold-still (2 s) and sweep (6 s) steps;
     (the `phase` column is not `running`). The stationary analysis also
     left out the first 20 s of each session.
 4.  For technical users:
-    `python analysis/diagnostics/parse_diag.py knee_diag_<timestamp>.log`
+    `python analysis/diagnostics/parse_diag.py ``knee_diag``_<timestamp>.log`
     turns a health log into tables and a per-minute summary.
 
 # 9. Troubleshooting
@@ -438,7 +353,7 @@ walks through the same hold-still (2 s) and sweep (6 s) steps;
 | GUI freezes or saved rows repeat                                                            | Old version of the GUI                                                        | Download the latest release (§4.3)                                                                                                                   |
 | Board not listed under Tools → Port in the Arduino IDE, or not found by the GUI             | Charge-only USB cable, loose cable, or a faulty USB port                      | Use a data USB cable; try another USB port; unplug and plug back in                                                                                  |
 | Python version only: “'python' is not recognized…” (Windows) or “command not found” (macOS) | Python not installed, or not added to PATH                                    | Reinstall Python with “Add Python to PATH” ticked; on Windows you can also type py instead of python; on macOS use python3                           |
-| Python version only: “No module named serial / matplotlib / tkinter”                        | The virtual environment is not switched on, or the add-ons were not installed | Switch the workspace on (§4.4, “Next time”), then run pip install -r requirements.txt again; on Linux install python3-tk                             |
+| Python version only: “No module named serial / matplotlib / tkinter”                        | The virtual environment is not switched on, or the add-ons were not installed | Switch the workspace on (Appendix A, “Next time”), then run pip install -r requirements.txt again; on Linux install python3-tk                       |
 | “Windows protected your PC”, or antivirus blocks the program                                | The program is not signed by a publisher                                      | Click More info → Run anyway; if your antivirus or IT policy blocks it, ask IT to allow it                                                           |
 | No recording files appear                                                                   | The program is in a folder it cannot write to (e.g. Program Files)            | Move KneeGoniometerGUI.exe to a folder of your own, such as Documents (§4.3)                                                                         |
 
@@ -450,3 +365,97 @@ walks through the same hold-still (2 s) and sweep (6 s) steps;
 3.  Keep the saved files (§8) together with your trial notes.
 4.  Note any problems (lights, error messages, restarts) in your trial
     notes.
+
+# Appendix A. Python version (optional)
+
+You only need this version to change the GUI, to use the command-line
+tools (§7.1), or to run the GUI on macOS/Linux. Most users should use
+the GUI program instead (§4.3). The GUI is written in Python; these
+steps install Python and the add-ons it needs, once per PC.
+
+1\. Install Python 3.8 or newer from python.org. On Windows, tick “Add
+Python to PATH” on the first screen of the installer. (On Linux, also
+install the `python3-tk` package.)
+
+2\. Open a terminal in the project folder (the unzipped folder that
+contains `knee_gui.py`). On Windows: open the folder in File Explorer,
+click the address bar, type `cmd` and press Enter. On macOS: right-click
+the folder in Finder → New Terminal at Folder.
+
+3\. Type the commands below one line at a time, pressing Enter after
+each. Use the set for your computer.
+
+**On Windows (Command Prompt):**
+
+    python -m venv .venv
+    .venv\Scripts\activate
+    pip install -r requirements.txt
+    python knee_collector_uart.py --selftest
+    python knee_gui.py --selftest
+    python knee_gui.py --simulate
+
+**On macOS / Linux (Terminal):**
+
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    python knee_collector_uart.py --selftest
+    python knee_gui.py --selftest
+    python knee_gui.py --simulate
+
+What the commands do: the first line creates a private Python workspace
+for this project (a “virtual environment”) and the second switches it on
+— the start of the line then shows **(.venv)**. The `pip ``install` line
+downloads the add-ons the program needs; this can take a few minutes.
+The two *selftest* lines check the installation without any hardware:
+they should end with “Self-test PASSED.” and “knee_gui self-test
+PASSED.”. The last line opens the GUI with made-up data so you can
+practise; close its window when done.
+
+**Next time:** you do not repeat the installation. Just open a terminal
+in the project folder and run the second line again
+(`.``venv``\Scripts\activate` on Windows,
+`source .``venv``/bin/activate` on macOS/Linux) to switch the workspace
+on, then type `python knee_gui.py` to start the GUI.
+
+# Appendix B. Releasing an updated GUI (for developers)
+
+If you change the GUI’s code (`knee_gui.py` or
+`knee_collector_uart.py`), publish a new `KneeGoniometerGUI.exe` so that
+users get the change. The project builds the program automatically when
+a new version number (a “tag”) is added to the repository. This needs
+Git installed, a copy of the repository made with `git clone` (not the
+ZIP download from §4.2), and permission to change the repository on
+GitHub.
+
+1\. Check your change with the Python version (Appendix A): run the two
+selftest lines and `python knee_gui.py --``simulate`, and ideally record
+one session with the device.
+
+2\. Merge your change into the main branch of the repository.
+
+3\. Choose the next version number. Never reuse one; the Tags page of
+the repository lists those already used. Small fix: v1.0.1. New feature:
+v1.1.0. A change that affects how the recorded files look: v2.0.0.
+
+4\. Add the version tag to main and send it to GitHub, in a terminal in
+the project folder (replace v1.0.1 with your version):
+
+    git checkout main
+    git pull
+    git tag v1.0.1
+    git push origin v1.0.1
+
+5\. Open the repository’s **Actions** tab. After a few minutes the
+“Release Windows exe” run turns green and the new version, with
+`KneeGoniometerGUI.exe`, appears on the Releases page. Edit its notes to
+say what changed. If the run fails (red), no release is made: fix the
+problem and use a new version number.
+
+6\. Ask users to download the new program and replace their old file
+(§4.3).
+
+Changes to the board programs (the `.``ino` files) are not part of the
+GUI program: anyone using them must load the new version onto both
+boards (§4.2). The full steps are in the README, under “Releasing an
+updated GUI”.
