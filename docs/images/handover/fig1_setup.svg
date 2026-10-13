@@ -51,7 +51,7 @@
   <rect x="920" y="110" width="230" height="150" rx="8" fill="#F2F2F2" stroke="#404040" stroke-width="3"/>
   <rect x="934" y="124" width="202" height="122" fill="#fff" stroke="#BFBFBF"/>
   <rect x="934" y="124" width="202" height="20" fill="#2E7D32"/>
-  <text x="1035" y="139" font-size="13" fill="#fff" text-anchor="middle" font-weight="bold">RUNNING</text>
+  <text x="1035" y="139" font-size="14" fill="#fff" text-anchor="middle" font-weight="bold">RUNNING</text>
   <polyline points="944,230 964,226 980,200 996,170 1012,160 1028,172 1044,206 1060,226 1076,228 1092,204 1108,168 1124,160" fill="none" stroke="#1565C0" stroke-width="2.5"/>
   <path d="M900,262 L1170,262 L1190,282 L880,282 Z" fill="#D9D9D9" stroke="#404040" stroke-width="3"/>
   <text x="1035" y="312" font-size="20" font-weight="bold" fill="#0B0B0B" text-anchor="middle">PC: KneeGoniometerGUI.exe</text>

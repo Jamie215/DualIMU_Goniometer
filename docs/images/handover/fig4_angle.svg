@@ -16,10 +16,10 @@
   <rect x="236" y="160" width="28" height="56" rx="4" fill="#2E75B6"/>
   <rect x="236" y="360" width="28" height="56" rx="4" fill="#ED7D31"/>
   <g font-size="18" fill="#0B0B0B">
-    <text x="300" y="186">thigh: d<tspan font-size="13" dy="4">thigh</tspan><tspan dy="-4"> = gravity in the board</tspan></text>
-    <text x="300" y="210" fill="#404040">→ incl<tspan font-size="13" dy="4">thigh</tspan><tspan dy="-4"> = 0°</tspan></text>
-    <text x="300" y="386">shank: d<tspan font-size="13" dy="4">shank</tspan><tspan dy="-4"> = gravity in the board</tspan></text>
-    <text x="300" y="410" fill="#404040">→ incl<tspan font-size="13" dy="4">shank</tspan><tspan dy="-4"> = 0°</tspan></text>
+    <text x="300" y="186">thigh: d<tspan font-size="14" dy="4">thigh</tspan><tspan dy="-4"> = gravity in the board</tspan></text>
+    <text x="300" y="210" fill="#404040">→ incl<tspan font-size="14" dy="4">thigh</tspan><tspan dy="-4"> = 0°</tspan></text>
+    <text x="300" y="386">shank: d<tspan font-size="14" dy="4">shank</tspan><tspan dy="-4"> = gravity in the board</tspan></text>
+    <text x="300" y="410" fill="#404040">→ incl<tspan font-size="14" dy="4">shank</tspan><tspan dy="-4"> = 0°</tspan></text>
     <text x="40" y="550" font-size="19">knee = 0° − 0° = <tspan font-weight="bold">0°</tspan></text>
   </g>
   <line x1="120" y1="130" x2="120" y2="270" stroke="#404040" stroke-width="3" marker-end="url(#ah)"/>
@@ -42,12 +42,12 @@
 
   <path d="M820,230 A130,130 0 0 0 903.6,199.6" fill="none" stroke="#1F4E79" stroke-width="3"/>
   <line x1="745" y1="250" x2="836" y2="229" stroke="#1F4E79" stroke-width="1.2"/>
-  <text x="630" y="250" font-size="18" fill="#1F4E79">incl<tspan font-size="13" dy="4">thigh</tspan><tspan dy="-4"> = +40°</tspan></text>
+  <text x="630" y="250" font-size="18" fill="#1F4E79">incl<tspan font-size="14" dy="4">thigh</tspan><tspan dy="-4"> = +40°</tspan></text>
   <text x="630" y="272" font-size="15" fill="#595959">(tilted forward)</text>
 
   <path d="M948.6,373.2 A120,120 0 0 1 888.6,357.1" fill="none" stroke="#C55A11" stroke-width="3"/>
   <line x1="745" y1="410" x2="900" y2="365" stroke="#C55A11" stroke-width="1.2"/>
-  <text x="630" y="410" font-size="18" fill="#C55A11">incl<tspan font-size="13" dy="4">shank</tspan><tspan dy="-4"> = −30°</tspan></text>
+  <text x="630" y="410" font-size="18" fill="#C55A11">incl<tspan font-size="14" dy="4">shank</tspan><tspan dy="-4"> = −30°</tspan></text>
   <text x="630" y="432" font-size="15" fill="#595959">(tilted backward)</text>
 
   <path d="M980.7,291.5 A50,50 0 0 1 923.6,296.5" fill="none" stroke="#0B0B0B" stroke-width="3"/>

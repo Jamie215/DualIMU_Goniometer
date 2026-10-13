@@ -12,15 +12,12 @@ This is the handover record for the dual-IMU knee goniometer proof of concept
 
 - **Handover summary (§1):** the state of the project at transition, open
   issues, and what to do next. Read this first.
-- **Design decisions (§2–§11):** what was decided, why, and which alternatives
-  were considered.
+- **Design decisions (§2–§8):** what was decided, why, and which alternatives
+  were considered; §8 describes what the software can do.
+- **Testing and future directions (§9–§10):** the preliminary stationary test
+  results and a summary of the areas to explore.
 - **Areas to explore (Appendices A–D):** longer analyses of directions that were
   weighed but not pursued yet.
-
-**Reading without a technical background.** Each section opens with a short
-summary in plain language; the bullets below it give the detail for whoever
-maintains the device. Technical terms are explained in the Key terms
-table below.
 
 Companion documents:
 
@@ -66,7 +63,7 @@ Companion documents:
   `KneeGoniometerGUI.exe`
   ([Link](https://github.com/Jamie215/DualIMU_Goniometer/releases)).
 - **Preliminary stationary testing done.** ≈0.01–0.02° noise, ≈ −0.001 °/min
-  drift on healthy hardware; 45°/90° rigs read 45.0°/89.0° (preliminary; §9.1).
+  drift on healthy hardware; 45°/90° rigs read 45.0°/89.0° (preliminary; §9).
 - **Standard Operating Procedure (SOP) developed**
   (`docs/SOP_Build_and_Use.docx`): build, setup, sessions and troubleshooting
   for operators; Python setup and releasing a new GUI version are in its
@@ -74,7 +71,7 @@ Companion documents:
 
 ## 1.2 Open issues
 
-1. **Faulty board.** One board's BMI270 fails after 20–40 min (§9.1). It must be
+1. **Faulty board.** One board's BMI270 fails after 20–40 min (§9). It must be
    identified and replaced. It should be the board without the red wire soldered
    to the 3.3 V pin; confirm before replacing it.
 2. **Raw test data not preserved.** The stationary-test CSVs and diagnostic logs
@@ -157,7 +154,7 @@ it live and saves it (Figures 1 and 2).
   receives the shank board's (*peripheral*) orientation over a wire, and sends
   both to the PC as one line per sample. The PC calculates the angle.
 - **Why:** The thigh and shank readings must belong to the same moment. At 50
-  samples per second a new sample arrives every 20 ms, so even a small mismatch
+  samples per second, a new sample arrives every 20 ms, so even a small mismatch
   between the two boards would pair readings taken at different times and
   distort the angle during movement. Merging on the thigh board means each line
   already holds a matched pair when it reaches the PC. Of the ways to keep the
@@ -181,7 +178,7 @@ it live and saves it (Figures 1 and 2).
 - **Design Decision:** Printed cases and elastic straps; the boards are joined by three
   soldered wires. The thigh board is powered and read through one USB cable to
   the PC; the shank board has its own USB power.
-- **Why:** The quickest way to a working, reliable bench prototype.
+- **Why:** The simple, quickest way to a working, reliable bench prototype.
 - **Trade-offs:** The person is tied to the PC and to power, and a wire runs
   across the knee. Batteries and wireless links are future work (Appendix C).
 
@@ -191,12 +188,31 @@ Each board turns its raw sensor readings into a steady estimate of
 how it is tilted. These choices keep that estimate stable at rest and accurate
 during movement (Figure 3).
 
-![Figure 3. How each board estimates its orientation. The filter blends the gyroscope and the accelerometer; the gyroscope's bias is removed first (§4.2) and the accelerometer counts for less during fast movement (§4.3).](images/handover/fig3_fusion.png)
+![Figure 3. How each board's Mahony filter estimates its orientation: it follows the gyroscope, compares the predicted "down" with the accelerometer, and corrects toward it. The gyroscope's bias is removed first (§4.2), and the accelerometer counts for less during fast movement (§4.3).](images/handover/fig3_fusion.png)
 
-*Note for maintainers:* the Arduino library for this sensor reports its axes as
-a mirror image of the real directions, so the firmware flips one axis (x) of the
-accelerometer and gyroscope after reading them. This is a bug fix rather than a
-design choice, but **any new firmware must keep it** (README, finding #1).
+**How the filter works.** The Mahony filter repeats three steps every time a
+new reading arrives (Figure 3):
+
+1. **Follow the rotation.** It turns its current orientation estimate by the
+   rotation the gyroscope just measured. This follows quick movements smoothly,
+   but any small gyroscope error is carried forward and slowly adds up.
+2. **Compare.** From that estimate it predicts which way "down" should be, and
+   compares this with the direction of gravity the accelerometer actually
+   measures.
+3. **Correct.** It nudges the estimate a little toward the measured "down". One
+   part of the correction acts straight away (`TWO_KP`); a second part builds up
+   slowly while the same error persists and cancels any remaining gyroscope bias
+   (`TWO_KI`).
+
+The result keeps the gyroscope's smoothness over short periods and the
+accelerometer's steadiness over long ones. Gravity cannot reveal rotation about
+the vertical (heading), so that part is not corrected and may drift; the angle
+method does not use it (§5.1).
+
+*Note:* the Arduino library for this sensor reports its axes as a mirror image
+of the real directions, so the firmware flips one axis (x) of the accelerometer
+and gyroscope after reading them. This is a bug fix where any new firmware
+**must keep it** (README, finding #1).
 
 ## 4.1 Accelerometer + gyroscope only, no magnetometer
 
@@ -288,8 +304,7 @@ to gravity is used, the boards do not need to be placed precisely.
 - **Why:** Range of motion, repetition counting, gait and movement quality all
   use differences between angles, so the starting point cancels out. A true
   anatomical angle (for example, measuring a knee that cannot fully straighten)
-  needs an outside reference that sees the anatomy; the sensors cannot provide
-  it, and a magnetometer would not help (Appendix A).
+  needs an outside reference that sees the anatomy.
 
 ## 5.6 Accepted limitation: side-view plane only
 
@@ -325,7 +340,7 @@ breaking the stream, and neither board ever waits on the other.
 
 - **Design Decision:** The shank board sends a message 50 times a second without being
   asked; the thigh board always uses the newest good one. If that is more than
-  30 ms old, the shank reading is marked missing and the PC fills the gap (§8.3).
+  30 ms old, the shank reading is marked missing and the PC fills the gap (§8).
 - **Why:** If the thigh board had to ask and wait, any short pause on the shank
   board would lose samples or hold up the thigh board. Streaming keeps the two
   boards independent.
@@ -391,67 +406,44 @@ each board is doing.
 | Peripheral | Solid on | Sensor stalled (being restarted) |
 | Peripheral | Off / frozen | No power or a serious fault |
 
-# 8. PC software
+# 8. PC software features
 
-Operators use a Windows program that walks them through calibration,
-shows the angle live and saves every session to its own file. Every reading
-received is saved once, and gaps are marked rather than hidden.
+Operators use a Windows program, `KneeGoniometerGUI.exe`, that needs no Python
+installation. It walks them through calibration, shows the angle live and saves
+every session to its own file. The same functions are available from the
+command line (`knee_collector_uart.py`) for development.
 
-## 8.1 One calculation engine, two front ends
+- **Connect with one click.** The program lists the available USB ports,
+  connects to the thigh board, and confirms that data are arriving from both
+  boards before a session can start.
+- **Guided calibration.** A large colour-coded banner tells the operator what to
+  do (hold still, then sweep) with a countdown for each stage (Figure 5).
+- **Live view.** The knee angle and each segment's tilt are plotted as they are
+  measured. When a session is stopped, the plot freezes on the whole session for
+  review.
+- **Automatic saving.** Each "Calibrate & collect" starts a new session with a
+  fresh calibration and a new time-stamped CSV file, so every file holds exactly
+  one calibration. One row is saved for every reading received, timed by the
+  board's own clock. Health reports from the boards go to a separate
+  diagnostics log.
+- **Honest gaps.** If up to 10 shank readings in a row are missing, the last good
+  value is repeated; longer gaps are left empty. Every row records whether it is
+  `valid`, `filled` or `missing`, and the plot can show either a continuous line
+  or the individual points.
+- **Clear error messages.** If no good data arrive, a red banner names the
+  failing part: nothing coming from the USB port, wrong or out-of-date firmware,
+  or no data from the shank board.
+- **Built-in self-test.** `--selftest` checks the angle math against known
+  answers. A new version of the Windows program is built and published
+  automatically when a version is tagged, and only if the self-test passes
+  (README "Releasing an updated GUI", SOP Appendix B).
 
-- **Design Decision:** `knee_collector_uart.py` holds the angle math, calibration, file
-  saving and self-test; `knee_gui.py` (the GUI) reuses it and adds port
-  selection, a colour-coded instruction banner, live plots and automatic saving.
-- **Why:** The math exists in one tested place, and the GUI makes sessions easy
-  and repeatable for people who are not developers.
-
-## 8.2 Sessions and saved rows
-
-- **Design Decision:** Each "Calibrate & collect" starts a new session with a fresh
-  calibration and a new time-stamped CSV file; "Stop collecting" freezes the plot
-  so the whole session can be reviewed (Figure 5). Exactly one row is saved per
-  reading received, timed by the board's clock.
-- **Why:** Each file then has exactly one calibration, and rows follow the
-  board's evenly spaced samples rather than the PC's timer, which runs unevenly
-  on Windows and would duplicate or skip rows.
-
-## 8.3 Short gaps filled, long gaps marked
-
-- **Design Decision:** If up to 10 shank readings in a row are missing, the last good
-  value is repeated (forward-filled); longer gaps are left empty. Every row
-  records whether it is `valid`, `filled` or `missing`.
-- **Why:** Plots stay readable, and it is always clear which data were real.
-
-## 8.4 Clear error messages
-
-If no good data arrive, the software says which part is failing: nothing coming
-from the USB port, wrong or out-of-date firmware, or no data from the shank
-board.
-
-## 8.5 Windows program, built automatically
-
-- **Design Decision:** The GUI is shipped as a single Windows program,
-  `KneeGoniometerGUI.exe`, built automatically by GitHub when a new version is
-  tagged. The build runs the self-test first and publishes the program on the
-  Releases page (steps: README "Releasing an updated GUI", SOP Appendix B).
-- **Why:** Operators do not need to install Python. Each program is tied to an
-  exact version of the code, and a failing self-test stops a broken program from
-  being released.
-- **Alternatives:** Running the Python code directly (too much setup for
-  operators); building the program by hand (not repeatable, and easy to include
-  untested changes).
-- **Trade-offs:** Windows only (macOS and Linux use the Python version); the
-  program is not digitally signed, so Windows shows a warning the first time it
-  runs.
-
-# 9. Testing and validation
+# 9. Preliminary Stationary Testing
 
 With the sensors held still, the angle was very steady (changes of a
 few hundredths of a degree) and did not drift on healthy hardware. Long runs
 exposed one faulty board. Movement and on-body testing have not been done yet
 (§1.3).
-
-## 9.1 Preliminary stationary testing (Sept 2026)
 
 Full results are in the Preliminary Stationary Test Report.
 
@@ -460,24 +452,18 @@ Full results are in the Preliminary Stationary Test Report.
 | Stability (6 holds of ~5 min) | ~0.01–0.02° noise; no growth in noise over longer periods |
 | Endurance (24–60 min) | Stable for 33 min on healthy hardware; ≈ −0.001 °/min drift |
 | 45° / 90° rigs (preliminary) | Read 45.0° and 89.0° |
-| Sample rate | ~40 Hz found (slow line writing on the thigh board, uneven PC timer); fixed to a true 50 Hz (§6.5, §8.2) |
+| Sample rate | ~40 Hz found (slow line writing on the thigh board, uneven PC timer); fixed to a true 50 Hz (§6.5, §8) |
 | Data loss in long runs | Traced to a **faulty sensor on one board**; the other ran over 1 h without problems in either role |
 
-Methods worth keeping:
+Methods worth mentioning:
 
-- **Leave out the first 20 s** of each session when analysing still holds
+- **Left out the first 20 s** of each session when analysing still holds
   (calibration and settling).
-- **Swap the boards** to tell a hardware fault from a software fault — the fault
+- **Swapped the boards** to tell a hardware fault from a software fault — the fault
   followed the board.
-- **Use the raw accelerometer as an independent check** of real movement; it
+- **Used the raw accelerometer as an independent check** of real movement; it
   showed that a slow creep in one session was the test rig settling, not the
   sensors drifting.
-
-## 9.2 Earlier bench checks
-
-Fixing both boards to one ruler (so the true angle cannot change) was the key
-test for drift; a right-angle placement read ~90°. The self-tests
-(`knee_collector_uart.py --selftest`, `knee_gui.py --selftest`) check the math.
 
 # 10. Directions considered but not pursued
 
@@ -487,23 +473,6 @@ test for drift; a right-angle placement read ~90°. The self-tests
 | B. Anatomical angle | Use a calibration movement that finds the knee's hinge axis, or a known straight pose; not built yet. |
 | C. Wireless (Bluetooth) | Start with the board-to-PC link; needs time stamps on each reading and batteries. Main benefit is safety and ethics approval. |
 | D. More sensors / joints | Needs sensor IDs, a more general data format and time matching across sensors; Bluetooth suits a hub layout. |
-
-# 11. Timeline of major milestones
-
-The commit codes identify each change in the project's version history (GitHub).
-
-| Date (2026) | Milestone | Commits |
-|---|---|---|
-| Aug 14 | First wired two-board prototype (simple tilt-based angle) | `09f3557`, `4b2fd42` |
-| Aug 17 | Angle made independent of board placement; magnetometer version tried | `557ba29`, `146cc14` |
-| Aug 18 | Back to accelerometer + gyroscope only; axis correction; gyro bias; gravity-based angle | `0dd3a93`, `6f1bdc7`, `276d9dc` |
-| Aug 19 | Single angle method; first live GUI | `4effe4c`, `9ef5550` |
-| Aug 20 | More reliable board-to-board link; collect only while connected; 50 Hz | `c767bc7`, `7197327`, `86efe6d` |
-| Sep 21–22 | Boards renamed central/peripheral; future directions written up | `d9ccd14`, `170580c` |
-| Sep 23–24 | Stationary testing; health reports; sample-rate fix; faulty-reading guard | `99a2446`, `72943ba`, `e02ae6d`, `8a9aaf4` |
-| Sep–Oct | Preliminary Stationary Test Report | `70815cf`, `38724bf` |
-| Oct 9–13 | Handover documents: SOP, design decisions, handover summary | `d0dd9be`, `82835c7` |
-| Oct 13 | Windows program built automatically; version 1.0.0 released; case design added | `572b164`, `a789fd6` |
 
 # Appendix A — Magnetometer: accuracy, and absolute vs. relative angle
 
@@ -679,7 +648,7 @@ naturally.
 
 ## C.3 Things to watch
 
-- **Lost data:** the existing gap handling (§6.3, §8.3) helps, but Bluetooth has
+- **Lost data:** the existing gap handling (§6.3, §8) helps, but Bluetooth has
   its own dropouts and reconnections.
 - **Timing:** Bluetooth delivers data in bursts (at least 7.5 ms apart) with
   uneven delays, so each reading should carry its own time stamp from the board.
