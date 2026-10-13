@@ -14,8 +14,8 @@
     <text x="220" y="64" font-size="22" font-weight="bold" fill="#fff" text-anchor="middle">Shank board (peripheral)</text>
     <text x="54" y="118">1. Reads BMI270 accel + gyro</text>
     <text x="54" y="152">2. Fixes the library's axes (negate x)</text>
-    <text x="54" y="186">3. 6-DOF Mahony filter → orientation</text>
-    <text x="54" y="220">4. Sensor-fault guard drops bad samples</text>
+    <text x="54" y="186">3. Filter combines them → orientation</text>
+    <text x="54" y="220">4. Drops impossible readings</text>
     <text x="54" y="254">5. Sends a 30-byte packet at 50 Hz</text>
     <text x="54" y="314" font-size="16" fill="#595959">Runs only while it receives keepalives</text>
 
@@ -23,9 +23,9 @@
     <rect x="530" y="30" width="380" height="52" rx="10" fill="#2E75B6"/>
     <rect x="530" y="66" width="380" height="16" fill="#2E75B6"/>
     <text x="720" y="64" font-size="22" font-weight="bold" fill="#fff" text-anchor="middle">Thigh board (central)</text>
-    <text x="554" y="118">1. Own BMI270 + axis fix + Mahony filter</text>
+    <text x="554" y="118">1. Its own sensor, axis fix and filter</text>
     <text x="554" y="152">2. Reads the shank stream; keeps the</text>
-    <text x="574" y="176">newest packet with a valid checksum</text>
+    <text x="574" y="176">newest message that passes its check</text>
     <text x="554" y="210">3. Shank packet older than 30 ms → invalid</text>
     <text x="554" y="244">4. Merges thigh + shank into one text line</text>
     <text x="554" y="278">5. One write per line, fixed 50 Hz</text>
@@ -35,7 +35,7 @@
     <rect x="1030" y="30" width="380" height="52" rx="10" fill="#595959"/>
     <rect x="1030" y="66" width="380" height="16" fill="#595959"/>
     <text x="1220" y="64" font-size="22" font-weight="bold" fill="#fff" text-anchor="middle">PC (GUI or CLI collector)</text>
-    <text x="1054" y="118">1. Forward-fills short shank gaps (≤ 10)</text>
+    <text x="1054" y="118">1. Fills short shank gaps (≤ 10 samples)</text>
     <text x="1054" y="152">2. Calibration: zero (2 s) + sweep (6 s)</text>
     <text x="1054" y="186">3. Knee angle = incl<tspan font-size="13" dy="4">thigh</tspan><tspan dy="-4"> − incl</tspan><tspan font-size="13" dy="4">shank</tspan></text>
     <text x="1054" y="220">4. Live plot with a phase banner</text>
@@ -65,16 +65,16 @@
   <g font-size="17" text-anchor="middle">
     <rect x="30" y="412" width="110" height="56" fill="#ED7D31" stroke="#fff" stroke-width="2"/>
     <text x="85" y="436" fill="#fff" font-weight="bold">0xAA</text>
-    <text x="85" y="458" fill="#fff" font-size="14">header · 1 B</text>
+    <text x="85" y="458" fill="#fff" font-size="14">start marker · 1 B</text>
     <rect x="140" y="412" width="420" height="56" fill="#F4B183" stroke="#fff" stroke-width="2"/>
-    <text x="350" y="436" fill="#0B0B0B" font-weight="bold">quaternion w, x, y, z</text>
+    <text x="350" y="436" fill="#0B0B0B" font-weight="bold">orientation (quaternion)</text>
     <text x="350" y="458" fill="#0B0B0B" font-size="14">4 floats · 16 B</text>
     <rect x="560" y="412" width="320" height="56" fill="#F8CBAD" stroke="#fff" stroke-width="2"/>
-    <text x="720" y="436" fill="#0B0B0B" font-weight="bold">raw accel x, y, z</text>
+    <text x="720" y="436" fill="#0B0B0B" font-weight="bold">raw accelerometer x, y, z</text>
     <text x="720" y="458" fill="#0B0B0B" font-size="14">3 floats · 12 B</text>
     <rect x="880" y="412" width="110" height="56" fill="#ED7D31" stroke="#fff" stroke-width="2"/>
-    <text x="935" y="436" fill="#fff" font-weight="bold">XOR</text>
+    <text x="935" y="436" fill="#fff" font-weight="bold">check</text>
     <text x="935" y="458" fill="#fff" font-size="14">checksum · 1 B</text>
   </g>
-  <text x="30" y="500" font-size="16" fill="#595959">The central resyncs on the 0xAA header and drops packets whose checksum fails, so a corrupted byte costs one packet, not the stream.</text>
+  <text x="30" y="500" font-size="16" fill="#595959">The thigh board finds each message by its start marker and discards any that fail the check, so a corrupted byte costs one sample, not the whole stream.</text>
 </svg>
