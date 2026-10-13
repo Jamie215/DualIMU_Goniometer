@@ -1,4 +1,4 @@
-# Dual-IMU Knee Goniometer — SOP: Build and Use
+# Dual-IMU Knee Goniometer: How to Build & Use
 
 > **The Word file `docs/SOP_Build_and_Use.docx` is the master copy of this SOP.** This
 > Markdown is a read-only mirror for viewing on GitHub; edit the Word file, then refresh
@@ -15,12 +15,12 @@ two cased Arduino boards joined by soldered wires, each powered over
 USB, with the central board connected to a PC.
 
 **How it works.** One board sits on the thigh and one on the shank
-(lower leg). Each board has a motion sensor that measures how it is
-tilted. The shank board sends its readings to the thigh board through
-the wires between them; the thigh board adds its own readings and sends
-everything to the PC through its USB cable. A program on the PC (the
-GUI) turns the two tilts into a knee angle, shows it live and saves it
-to a file.
+(lower leg). Each board has an Inertial Measurement Unit (IMU) that
+measures how it is tilted (as a quaternion). The shank board sends its
+readings to the thigh board through the wires between them; the thigh
+board adds its own readings and sends everything to the PC through its
+USB cable. A graphical user interface (GUI) on the PC computes the knee
+angle from the two tilts, shows it live and saves it to a file.
 
 **Key terms used in this SOP:**
 
@@ -33,11 +33,15 @@ board. Labelled PERIPHERAL.
 • **Firmware / flashing.** The small program that runs on each board,
 and loading it onto the board.
 
-• **Terminal.** A window where you type commands (Command Prompt on
-Windows, Terminal on macOS).
+• **GUI program.** The data-collection program, `KneeGoniometerGUI.exe`
+(Windows). No installation or Python needed (§4.3).
 
-• **Virtual environment.** A private Python workspace for this project,
-so its add-ons do not affect anything else on the PC.
+• **Terminal** (Python version only). A window where you type commands
+(Command Prompt on Windows, Terminal on macOS).
+
+• **Virtual environment** (Python version only). A private Python
+workspace for this project, so its add-ons do not affect anything else
+on the PC.
 
 • **Port.** The name the PC gives a board plugged in by USB (e.g. COM5
 on Windows).
@@ -62,11 +66,11 @@ Figure 1. MSK-IF version research prototype
 | **Qty** | **Item**                            | **Notes**                                                                                                                                                                   |
 |---------|-------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 2       | Arduino Nano 33 BLE Rev2            | Each has a built-in motion sensor (BMI270). Label one “CENTRAL (thigh)” and one “PERIPHERAL (shank)”.                                                                       |
-| 2       | Board case                          | Custom 3D-printed (DualIMU_Goniometer.STL)                                                                                                                                  |
+| 2       | Board case                          | Custom 3D-printed (DualIMU_Goniometer.stl)                                                                                                                                  |
 | 3       | Inter-board wires                   | Two signal wires + one shared ground, soldered.                                                                                                                             |
 | 2       | USB cable (micro-USB to PC/charger) | One for each board. Must be **data** cables — some USB cables only charge, and the PC will not see the board. The thigh (central) board’s cable carries the data to the PC. |
 | 1       | USB power for the peripheral        | Second PC USB port, USB charger, or power bank                                                                                                                              |
-| 1       | PC                                  | Windows, macOS or Linux; Python 3.8+                                                                                                                                        |
+| 1       | PC                                  | Windows PC for the ready-made GUI program. macOS/Linux only via the Python version (Python 3.8+, §4.4).                                                                     |
 | 2       | Mounting to the leg                 | Elastic straps                                                                                                                                                              |
 
 > Note: If using the research prototype developed by MSK-IF: the motion
@@ -74,7 +78,7 @@ Figure 1. MSK-IF version research prototype
 > after 20–40 minutes of use (see the Preliminary Stationary Test
 > Report). Replace that board before further testing.
 
-# 3. Building the device
+# 3. Building the prototype
 
 ## 3.1 Wiring
 
@@ -82,9 +86,8 @@ Solder three wires between the two boards, as in the table below. One
 wire carries the shank board’s readings to the thigh board, one lets the
 thigh board tell the shank board when to start and stop, and one is a
 shared ground. Each signal wire goes from a TX (send) pin on one board
-to the RX (receive) pin on the other — never TX to TX. On the board
-itself these pins are printed **TX1** (D1), **RX0** (D0) and **GND**
-(see Figure 2).
+to the RX (receive) pin on the other. On the board itself these pins are
+printed **TX1** (D1), **RX0** (D0) and **GND** (see Figure 2).
 
 | **From**               | **To**                 | **Purpose**                                             |
 |------------------------|------------------------|---------------------------------------------------------|
@@ -111,9 +114,10 @@ Note:
 
 ## 3.2 Enclosure and labelling
 
-1.  Print two cases from `DualIMU_Goniometer.STL`, one per board (each
-    case is a base and a lid).
-2.  Fit each board in its case with the USB port accessible.
+1.  Print two cases from `DualIMU_Goniometer.``stl`, one per board (each
+    case is composed of a base and a lid).
+2.  Fit each board in its case with the USB port accessible. Tape the
+    lid to the base for tighter enclosure.
 3.  Mark on each case its role (CENTRAL / PERIPHERAL) and an arrow along
     the board’s long side pointing toward the USB port. The arrow is
     used when placing the sensors (§6).
@@ -136,8 +140,8 @@ onto the boards.
 Download the project files to the PC from the project repository ([Link
 to Repository](https://github.com/Jamie215/DualIMU_Goniometer)). On the
 repository page, click the green Code button → Download ZIP, then unzip
-the folder somewhere easy to find, such as Documents. Load (“flash”)
-both boards from the same version of the files.
+the folder to your preferred location. Load (“flash”) both boards from
+the same version of the files.
 
 1.  Connect the thigh (central) board to the PC by USB. In the Arduino
     IDE, open `central_imu/central_imu.ino` from the project folder.
@@ -164,11 +168,33 @@ Both programs also send a short health report once a second, which the
 GUI saves for troubleshooting. This is switched on by the line
 “`#define DIAG 1`” near the top of each program; leave it as it is.
 
-## 4.3 Python environment
+## 4.3 Installing the GUI program (Windows)
 
-The data-collection program (the GUI) runs on the PC and is written in
-Python. This step installs Python and the add-ons the program needs. It
-only needs to be done once per PC.
+The GUI program is a single file, `KneeGoniometerGUI.exe`. Nothing else
+needs to be installed, not even Python.
+
+1\. Download `KneeGoniometerGUI.exe` from the latest release on the
+project’s Releases page ([Link to
+Releases](https://github.com/Jamie215/DualIMU_Goniometer/releases)).
+Under Assets, click the file name.
+
+2\. Make a folder for it somewhere you can write to, for example
+`Documents\KneeGoniometer`, and move the file there. Recordings are
+saved in the same folder as the program, so do not put it in Program
+Files.
+
+3\. Double-click it. The first time, Windows may show “Windows protected
+your PC”, because the program is not signed by a publisher. Click **More
+info**, then **Run anyway**. The program takes a few seconds to open.
+
+To update the program later, download the newer release and replace the
+old file.
+
+## 4.4 Python version (optional)
+
+Only needed if you want to change the GUI’s code, use the command-line
+tools (§7.1), or run the GUI on macOS/Linux. The GUI is written in
+Python; this step installs Python and the add-ons it needs, once per PC.
 
 1\. Install Python 3.8 or newer from python.org. On Windows, tick “Add
 Python to PATH” on the first screen of the installer. (On Linux, also
@@ -210,7 +236,8 @@ practise; close its window when done.
 **Next time:** you do not repeat the installation. Just open a terminal
 in the project folder and run the second line again
 (`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on
-macOS/Linux) to switch the workspace on before starting the GUI.
+macOS/Linux) to switch the workspace on, then type `python knee_gui.py`
+to start the GUI.
 
 # 5. Pre-session checklist
 
@@ -238,8 +265,8 @@ macOS/Linux) to switch the workspace on before starting the GUI.
     the knee crease or the kneecap.
 3.  Line up each board’s long side roughly with the leg, with the arrow
     (USB port) pointing toward the hip. The boards do not need to be
-    lined up exactly — the calibration at the start of each session
-    takes care of how they sit.
+    lined up exactly as the calibration at the start of each session
+    takes care of how they are mounted.
 4.  Fasten each board firmly with an elastic strap so it cannot slide or
     turn during the session. If a board moves on the leg after
     calibration, the angle will be wrong. Route the wire so it does not
@@ -247,11 +274,10 @@ macOS/Linux) to switch the workspace on before starting the GUI.
 
 # 7. Running a session (GUI — recommended)
 
-1.  Start the GUI: open a terminal in the project folder, switch the
-    workspace on (§4.3, “Next time”), and type `python knee_gui.py`. The
-    GUI checks each USB port for a few seconds and picks the thigh
-    board: the Port box shows an entry ending in **\[central OK …\]**.
-    If it does not, click **Rescan**.
+1.  Start the GUI: double-click `KneeGoniometerGUI.exe` (§4.3). (Python
+    version: see §4.4, “Next time”.) The GUI checks each USB port for a
+    few seconds and picks the thigh board: the Port box shows an entry
+    ending in **\[central OK …\]**. If it does not, click **Rescan**.
 2.  Click **Connect**. This switches both boards on: the thigh board’s
     orange light turns on and the shank board’s orange light starts
     blinking quickly. Keep both boards still for about 4 seconds while
@@ -318,7 +344,7 @@ Figure 7. After Stop collecting — the whole session is shown for review
 continuous line over short gaps in the data; *Gap (points)* shows each
 gap. This only changes how the data points are plotted in the chart.
 
-## 7.1 Command-line alternative (optional, for technical users)
+## 7.1 Command-line alternative (optional, Python version only)
 
     python knee_collector_uart.py --port COM5 --monitor
     python knee_collector_uart.py --port COM5 --out trial1.csv
@@ -338,11 +364,11 @@ walks through the same hold-still (2 s) and sweep (6 s) steps;
 | `knee_YYYYMMDD_HHMMSS.csv`      | One row per measurement (50 per second): time, knee angle, the tilt of each board, whether each measurement was received correctly, and raw sensor values for technical analysis |
 | `knee_diag_YYYYMMDD_HHMMSS.log` | Messages from the boards, including the once-a-second health report; used for troubleshooting                                                                                    |
 
-1.  Files are saved in the folder the GUI was started from — the project
-    folder, if you followed §4.3. Each session is saved automatically
-    while it runs, so nothing is lost if the program closes
-    unexpectedly. **Save copy…** saves a copy somewhere else. The `.csv`
-    file opens in Excel.
+1.  Files are saved in the same folder as `KneeGoniometerGUI.exe`
+    (Python version: the project folder). Each session is saved
+    automatically while it runs, so nothing is lost if the program
+    closes unexpectedly. **Save copy…** saves a copy somewhere else. The
+    `.csv` file opens in Excel.
 2.  Write down which file belongs to which trial (date, participant or
     setup, sensor placement, notes).
 3.  For technical users: when analysing, leave out the calibration rows
@@ -354,23 +380,25 @@ walks through the same hold-still (2 s) and sweep (6 s) steps;
 
 # 9. Troubleshooting
 
-| **Symptom**                                                                     | **Likely cause**                                                              | **Action**                                                                                                                                           |
-|---------------------------------------------------------------------------------|-------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
-| GUI finds no port, or “No data on …”                                            | Thigh board not connected or not powered, or another program is using it      | Reconnect the USB cable; close the Arduino Serial Monitor; click Rescan                                                                              |
-| “… isn't an 18-field 'D' line …”                                                | The boards have an old or wrong program                                       | Load both boards from the same version of the files (§4.2)                                                                                           |
-| “… no data from the peripheral …”                                               | The computer is receiving nothing from the shank board                        | Check the shank board has power and its light is blinking; check all three wires (§3.1)                                                              |
-| Shank board orange light blinks slowly during a session                         | The shank board is not getting the start signal                               | Check the wire from thigh TX (D1) to shank RX (D0), and the ground wire                                                                              |
-| Shank board orange light stays on                                               | Its motion sensor stopped responding; the board is trying to restart it       | Wait a few seconds. If it continues, or the orange light keeps flashing 3 times (the board restarting), the sensor may be faulty — replace the board |
-| Shank board orange light off                                                    | No power, or the program has stopped                                          | Check its USB power; load the program again (§4.2)                                                                                                   |
-| Angle stays at 0 while moving                                                   | The boards did not tilt enough during the sweep                               | Calibrate again with bigger, slower movements that tilt both boards                                                                                  |
-| Angle goes negative when the knee bends                                         | The sweep did not bend the knee                                               | Calibrate again, bending the knee during the sweep                                                                                                   |
-| Angle slowly drifts while the leg is still                                      | A board or strap is moving                                                    | Tighten the straps; make sure the wire is not pulling on a board                                                                                     |
-| Shank data stops after 20–40 min                                                | Faulty motion sensor (known on one of the original boards)                    | Replace the board                                                                                                                                    |
-| Low “valid %” (bottom right of the GUI)                                         | Loose wire or poor connection between the boards                              | Check the solder joints; keep the wires short and twisted together                                                                                   |
-| GUI freezes or saved rows repeat                                                | Old version of the GUI                                                        | Update to the latest knee_gui.py from the repository                                                                                                 |
-| Board not listed under Tools → Port in the Arduino IDE, or not found by the GUI | Charge-only USB cable, loose cable, or a faulty USB port                      | Use a data USB cable; try another USB port; unplug and plug back in                                                                                  |
-| “'python' is not recognized…” (Windows) or “command not found” (macOS)          | Python not installed, or not added to PATH                                    | Reinstall Python with “Add Python to PATH” ticked; on Windows you can also type py instead of python; on macOS use python3                           |
-| “No module named serial / matplotlib / tkinter”                                 | The virtual environment is not switched on, or the add-ons were not installed | Switch the workspace on (§4.3, “Next time”), then run pip install -r requirements.txt again; on Linux install python3-tk                             |
+| **Symptom**                                                                                 | **Likely cause**                                                              | **Action**                                                                                                                                           |
+|---------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| GUI finds no port, or “No data on …”                                                        | Thigh board not connected or not powered, or another program is using it      | Reconnect the USB cable; close the Arduino Serial Monitor; click Rescan                                                                              |
+| “… isn't an 18-field 'D' line …”                                                            | The boards have an old or wrong program                                       | Load both boards from the same version of the files (§4.2)                                                                                           |
+| “… no data from the peripheral …”                                                           | The computer is receiving nothing from the shank board                        | Check the shank board has power and its light is blinking; check all three wires (§3.1)                                                              |
+| Shank board orange light blinks slowly during a session                                     | The shank board is not getting the start signal                               | Check the wire from thigh TX (D1) to shank RX (D0), and the ground wire                                                                              |
+| Shank board orange light stays on                                                           | Its motion sensor stopped responding; the board is trying to restart it       | Wait a few seconds. If it continues, or the orange light keeps flashing 3 times (the board restarting), the sensor may be faulty — replace the board |
+| Shank board orange light off                                                                | No power, or the program has stopped                                          | Check its USB power; load the program again (§4.2)                                                                                                   |
+| Angle stays at 0 while moving                                                               | The boards did not tilt enough during the sweep                               | Calibrate again with bigger, slower movements that tilt both boards                                                                                  |
+| Angle goes negative when the knee bends                                                     | The sweep did not bend the knee                                               | Calibrate again, bending the knee during the sweep                                                                                                   |
+| Angle slowly drifts while the leg is still                                                  | A board or strap is moving                                                    | Tighten the straps; make sure the wire is not pulling on a board                                                                                     |
+| Shank data stops after 20–40 min                                                            | Faulty motion sensor (known on one of the original boards)                    | Replace the board                                                                                                                                    |
+| Low “valid %” (bottom right of the GUI)                                                     | Loose wire or poor connection between the boards                              | Check the solder joints; keep the wires short and twisted together                                                                                   |
+| GUI freezes or saved rows repeat                                                            | Old version of the GUI                                                        | Download the latest release (§4.3)                                                                                                                   |
+| Board not listed under Tools → Port in the Arduino IDE, or not found by the GUI             | Charge-only USB cable, loose cable, or a faulty USB port                      | Use a data USB cable; try another USB port; unplug and plug back in                                                                                  |
+| Python version only: “'python' is not recognized…” (Windows) or “command not found” (macOS) | Python not installed, or not added to PATH                                    | Reinstall Python with “Add Python to PATH” ticked; on Windows you can also type py instead of python; on macOS use python3                           |
+| Python version only: “No module named serial / matplotlib / tkinter”                        | The virtual environment is not switched on, or the add-ons were not installed | Switch the workspace on (§4.4, “Next time”), then run pip install -r requirements.txt again; on Linux install python3-tk                             |
+| “Windows protected your PC”, or antivirus blocks the program                                | The program is not signed by a publisher                                      | Click More info → Run anyway; if your antivirus or IT policy blocks it, ask IT to allow it                                                           |
+| No recording files appear                                                                   | The program is in a folder it cannot write to (e.g. Program Files)            | Move KneeGoniometerGUI.exe to a folder of your own, such as Documents (§4.3)                                                                         |
 
 # 10. After the session
 

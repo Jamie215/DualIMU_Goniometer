@@ -42,6 +42,7 @@ analysis/static_test/                stationary test scripts, figures, report
 analysis/diagnostics/parse_diag.py   diagnostic log -> tables
 docs/                                SOP, design decisions, handover, research areas
 docs/build_docs.sh                   regenerates the design-decisions and handover .docx from Markdown
+.github/workflows/release.yml        builds KneeGoniometerGUI.exe (Windows GUI) on a v* tag
 ```
 
 ## Open issues
@@ -83,7 +84,10 @@ docs/build_docs.sh                   regenerates the design-decisions and handov
 ## Housekeeping
 
 - No licence file — decide whether one is needed before sharing the code.
-- Tag the handed-over commit (e.g. `v0.1-handover`) so the firmware, software and
-  documents can be referenced together.
+- Tag the handed-over commit with a version tag (e.g. `git tag v1.0.0` then
+  `git push origin v1.0.0`). This references the firmware, software and documents
+  together, and the release workflow publishes `KneeGoniometerGUI.exe` on the
+  Releases page, which the SOP (§4.3) tells users to download. Until a tag is
+  pushed, the Releases page is empty.
 - Regenerate the design-decisions and handover Word copies after editing their
   Markdown: `bash docs/build_docs.sh`. The SOP is edited in Word directly.
