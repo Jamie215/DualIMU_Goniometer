@@ -3,7 +3,7 @@ title: "Dual-IMU Knee Goniometer — Project Handover"
 subtitle: "State at transition, design decisions and their rationale, and directions to explore"
 ---
 
-*Version 1.0 — October 2026. Prepared by Jamie Kim.*
+*October 2026 Ver. Prepared by Jamie Kim.*
 
 # About this document
 
@@ -576,7 +576,7 @@ pose is held becomes 0°, and the unknown mounting cancels out.
   repeated whenever conditions change.
 - **Accuracy gain for knee bending, gait and sit-to-stand:** about none.
 
-## A.7 Next experiments (if revived)
+## A.7 Next experiments (if further considered)
 
 1. **Check the room first:** record the raw magnetic field during a normal
    session *in the actual test space* and plot its strength. If it stays roughly
@@ -631,7 +631,7 @@ reference that **sees the anatomy**.
 
 # Appendix C — Wireless (Bluetooth) links
 
-The boards already have Bluetooth radios. Using them would remove the
+Arduino Nano 33 BLE Rev2s already have Bluetooth radios. Using them would remove the
 wires, mainly for safety and ethics approval, at the cost of batteries and less
 predictable timing.
 
@@ -663,7 +663,8 @@ naturally.
   its own dropouts and reconnections.
 - **Timing:** Bluetooth delivers data in bursts (at least 7.5 ms apart) with
   uneven delays, so each reading should carry its own time stamp from the board.
-- **Capacity:** 50 Hz is possible but with less spare room than the wire;
+- **Capacity:** 50 Hz may be possible with a Bluetooth dongle but with less
+  spare room than the wire;
   several readings may need to be sent together, or the rate lowered.
 - **Simpler messages:** Bluetooth already separates messages, so the start-marker
   logic (§6.2) is not needed; the checksum is still worth keeping.
