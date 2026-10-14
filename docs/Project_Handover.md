@@ -3,7 +3,7 @@ title: "Dual-IMU Knee Goniometer — Project Handover"
 subtitle: "State at transition, design decisions and their rationale, and directions to explore"
 ---
 
-*Drafted in October 2026, prepared by Jamie Kim*
+*Version 1.0 — October 2026. Prepared by Jamie Kim.*
 
 # About this document
 
@@ -11,7 +11,7 @@ This is the handover record for the dual-IMU knee goniometer proof of concept
 (August–October 2026). It is composed of the following:
 
 - **Handover summary (§1):** the state of the project at transition, open
-  issues, and what to do next. Read this first.
+  issues, what to do next, and who to contact. Read this first.
 - **Design decisions (§2–§8):** what was decided, why, and which alternatives
   were considered; §8 describes what the software can do.
 - **Testing and future directions (§9–§10):** the preliminary stationary test
@@ -19,27 +19,17 @@ This is the handover record for the dual-IMU knee goniometer proof of concept
 - **Areas to explore (Appendices A–D):** longer analyses of directions that were
   weighed but not pursued yet.
 
-Companion documents (the SOP, the README and the test report) are listed in §1.4.
+Companion documents (the SOP, the README and the test report) are listed in
+§1.4, and technical terms are explained under Key terms, after §1.
 
-## Key terms
+**Where to start**
 
-| Term | Meaning |
+| If you want to… | Start with |
 |---|---|
-| IMU (inertial measurement unit) | A small motion-sensor chip. The one used here (BMI270) contains an accelerometer and a gyroscope. |
-| Accelerometer | Measures acceleration, including gravity. When the board is still, it shows which way is down. |
-| Gyroscope ("gyro") | Measures how fast the board is rotating. Good for quick movements, but small errors add up over time. |
-| Magnetometer | Measures the magnetic field, like a compass. Present on the board (BMM150) but not used. |
-| Orientation | How a board is tilted and turned in space. Stored as a *quaternion*, a set of four numbers. |
-| 6-DOF / 9-DOF | Fusion from accelerometer + gyroscope (6 measured axes), or with the magnetometer as well (9). |
-| Drift | A slow, steady error that builds up over time even when nothing moves. |
-| Gyro bias | The small rotation a gyroscope reports when it is actually still; the main cause of drift. |
-| Heading (yaw) | Which way a board faces when turned about the vertical, like a compass direction. Gravity cannot tell this. |
-| Central / peripheral | The thigh board (central) collects data from the shank board (peripheral) and sends both to the PC. |
-| Firmware | The program running on each Arduino board (an Arduino "sketch"). Changing it means *reflashing* the board. |
-| UART / serial link | The simple wired connection between the two boards; *baud* is its speed in bits per second. |
-| Packet / checksum | One message sent between the boards / a check number that reveals a corrupted message. |
-| Calibration (zeroing, sweep) | The short routine at the start of each session that tells the software how the boards sit on the leg (§5.3). |
-| GUI / CLI | Graphical user interface (the windowed program) / command-line interface (text commands in a terminal). |
+| Run a data-collection session | The SOP (`docs/SOP_Build_and_Use.docx`) |
+| Change the GUI or the firmware | `README.md`, then §4–§6 of this document |
+| Plan the next stage of research | §1.3, §9, §10 and Appendices A–D |
+| Understand why it works the way it does | §2–§8 |
 
 # 1. State at transition (October 2026)
 
@@ -64,14 +54,15 @@ Companion documents (the SOP, the README and the test report) are listed in §1.
 ## 1.2 Open issues
 
 1. **Faulty board.** One board's BMI270 fails after 20–40 min (§9). It must be
-   identified and replaced. It should be the board without the red wire soldered
+   identified and replaced; the board-swap check in §9 shows which one (the
+   fault follows the board). It should be the board without the red wire soldered
    to the 3.3 V pin; confirm before replacing it.
 2. **Raw test data not preserved.** The stationary-test CSVs and diagnostic logs
    were not archived (`*.csv` / `*.log` are git-ignored intentionally during
    development phase). Plan data storage once testing moves beyond the
    preliminary stage.
-3. **Peripheral-only fault guard.** The sensor-fault guard runs on the
-   peripheral only; the central has no equivalent (§7.2).
+3. **Reading checks on the shank board only.** Only the shank board rejects
+   impossible readings (§7.2); the thigh board has no equivalent.
 4. **Angle log resolution.** Angles are written to 0.01°, which limits how low
    a noise floor can be measured.
 
@@ -79,12 +70,13 @@ Companion documents (the SOP, the README and the test report) are listed in §1.
 
 1. Replace the faulty board; repeat a one-hour stationary run on two healthy
    boards for a clean baseline.
-2. Sweep **both** nodes during calibration so the angle uses both sensors (§5.3)
+2. Move **both** segments during the calibration sweep so the angle uses both
+   sensors (§5.3).
 3. Try the strap placement in the SOP on a person and refine it if the boards
    shift during movement.
 4. Controlled accuracy test: repeated 0°/45°/90° placements on a precise rig or
    against a goniometer.
-5. Dynamic range-of-motion testing (tune `TWO_KP` and the soft accel gate, §4.3,
+5. Dynamic range-of-motion testing (tune `TWO_KP` and the accelerometer trust, §4.3,
    if fast reps lag or overshoot).
 6. Consider the longer-term directions in §10 and Appendices A–D (battery +
    Bluetooth for an untethered device; absolute angle via functional calibration).
@@ -113,6 +105,43 @@ Companion documents (the SOP, the README and the test report) are listed in §1.
 | `docs/build_docs.sh` | Regenerates this document's `.docx` from its Markdown |
 | `.github/workflows/release.yml` | Builds `KneeGoniometerGUI.exe` on a `v*` tag |
 
+**Editing this document.** `docs/Project_Handover.md` is the master copy; the
+Word file is generated from it with `bash docs/build_docs.sh`, so edits made
+only in Word are lost at the next rebuild. The SOP is the other way round: its
+Word file is the master and the `.md` is a mirror.
+
+## 1.5 Handover logistics
+
+- **Prototype:** its current location is given in the handover copy of this
+  document; it may be relocated after October 2026.
+- **Code and documents:** the GitHub repository
+  ([Jamie215/DualIMU_Goniometer](https://github.com/Jamie215/DualIMU_Goniometer))
+  is owned by Jamie Kim. The successor is expected to fork or clone it and
+  continue the work in their own copy. GitHub turns off automated builds
+  (Actions) in a fork by default; enable them to keep building the Windows
+  program (§8).
+- **Questions:** Jamie Kim (contact details are also in the handover copy).
+
+# Key terms
+
+| Term | Meaning |
+|---|---|
+| IMU (inertial measurement unit) | A small motion-sensor chip. The one used here (BMI270) contains an accelerometer and a gyroscope. |
+| Accelerometer | Measures acceleration, including gravity. When the board is still, it shows which way is down. |
+| Gyroscope ("gyro") | Measures how fast the board is rotating. Good for quick movements, but small errors add up over time. |
+| Magnetometer | Measures the magnetic field, like a compass. Present on the board (BMM150) but not used. |
+| Orientation | How a board is tilted and turned in space. Stored as a *quaternion*, a set of four numbers. |
+| 6-DOF / 9-DOF | Fusion from accelerometer + gyroscope (6 measured axes), or with the magnetometer as well (9). |
+| Drift | A slow, steady error that builds up over time even when nothing moves. |
+| Gyro bias | The small rotation a gyroscope reports when it is actually still; the main cause of drift. |
+| Heading (yaw) | Which way a board faces when turned about the vertical, like a compass direction. Gravity cannot tell this. |
+| Central / peripheral | The thigh board (central) collects data from the shank board (peripheral) and sends both to the PC. |
+| Firmware | The program running on each Arduino board (an Arduino "sketch"). Changing it means *reflashing* the board. |
+| UART / serial link | The simple wired connection between the two boards; *baud* is its speed in bits per second. |
+| Packet / checksum | One message sent between the boards / a check number that reveals a corrupted message. |
+| Calibration (zeroing, sweep) | The short routine at the start of each session that tells the software how the boards sit on the leg (§5.3). |
+| GUI / CLI | Graphical user interface (the windowed program) / command-line interface (text commands in a terminal). |
+
 # 2. Problem and goals
 
 The goal is a low-cost wearable that measures **knee flexion angle** from two
@@ -125,8 +154,8 @@ inertial sensors, one above and one below the knee.
 | Simple design | Prefer the smallest system as a proof of concept that can be easily built and tested. |
 | Usable in testing sessions | A GUI that drives calibration, shows live data, and saves every session automatically. |
 
-Scope: **sagittal-plane** knee flexion (standing range of motion, gait,
-sit-to-stand), relative to a calibration pose. Absolute anatomical angles and
+Scope: knee bending (**flexion**) in the side-view (**sagittal**) plane, during
+standing range of motion, gait and sit-to-stand, relative to a calibration pose. Absolute anatomical angles and
 3D kinematics are out of scope (see §5.5 and §10).
 
 # 3. System architecture
@@ -281,7 +310,7 @@ to gravity is used, the boards do not need to be placed precisely.
 ## 5.4 Signed, continuous angle
 
 - **Design Decision:** Bending reads positive and over-straightening reads negative,
-  with no jumps anywhere in the range (calculated as `atan2(g·f, g·d)`).
+  with no jumps anywhere in the range.
 - **Why:** It tells bending apart from over-straightening and gives the same
   readings on the way back from deep bending (checked by the self-test with a
   0° → 130° → 0° movement).
@@ -379,13 +408,13 @@ each board is doing.
 
 | Board | Pattern | Meaning |
 |---|---|---|
-| Central | On | Collecting (USB port open) |
-| Central | Off | Idle |
-| Peripheral | 3 quick flashes | Starting up |
-| Peripheral | Slow blink | Idle, waiting for the start signal |
-| Peripheral | Fast blink (~3 Hz) | Active, sending data |
-| Peripheral | Solid on | Sensor stalled (being restarted) |
-| Peripheral | Off / frozen | No power or a serious fault |
+| Thigh (central) | On | Collecting (USB port open) |
+| Thigh (central) | Off | Idle |
+| Shank (peripheral) | 3 quick flashes | Starting up |
+| Shank (peripheral) | Slow blink | Idle, waiting for the start signal |
+| Shank (peripheral) | Fast blink (~3 Hz) | Active, sending data |
+| Shank (peripheral) | Solid on | Sensor stalled (being restarted) |
+| Shank (peripheral) | Off / frozen | No power or a serious fault |
 
 # 8. PC software (GUI) features
 
@@ -432,7 +461,7 @@ Full results are in the Preliminary Stationary Test Report.
 |---|---|
 | Stability (6 holds of ~5 min) | ~0.01–0.02° noise; no growth in noise over longer periods |
 | Endurance (24–60 min) | Stable for 33 min on healthy hardware; ≈ −0.001 °/min drift |
-| 45° / 90° rigs (preliminary) | Read 45.0° and 89.0° |
+| 45° / 90° rigs (preliminary) | Read 45.0° and 89.0° (a single placement each; to be repeated in the accuracy test, §1.3) |
 | Sample rate | ~40 Hz found (slow line writing on the thigh board, uneven PC timer); fixed to a true 50 Hz (§6.4, §8) |
 | Data loss in long runs | Traced to a **faulty sensor on one board**; the other ran over 1 h without problems in either role |
 
