@@ -1,11 +1,5 @@
 # Dual-IMU Knee Goniometer: How to Build & Use
 
-> **The Word file `docs/SOP_Build_and_Use.docx` is the master copy of this SOP.** This
-> Markdown is a read-only mirror for viewing on GitHub; edit the Word file, then refresh
-> this mirror with:
-> `pandoc docs/SOP_Build_and_Use.docx -t gfm --extract-media=docs/images/sop -o docs/SOP_Build_and_Use.md`
-> (and change `docs/images/` to `images/` in the image links).
-
 *Drafted in October 2026, prepared by Jamie Kim*
 
 # 1. Purpose and scope

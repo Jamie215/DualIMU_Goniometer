@@ -15,8 +15,7 @@ the boards in a precise, repeatable orientation.
 from the [latest release](https://github.com/Jamie215/DualIMU_Goniometer/releases/latest)
 and follow the SOP, which covers building the device, flashing the boards, placing
 the sensors and running a session:
-[`docs/SOP_Build_and_Use.docx`](docs/SOP_Build_and_Use.docx) (master copy;
-a read-only Markdown mirror is [`docs/SOP_Build_and_Use.md`](docs/SOP_Build_and_Use.md)).
+[`docs/SOP_Build_and_Use.md`](docs/SOP_Build_and_Use.md).
 No Python is needed.
 
 **Changing the code.**
@@ -551,9 +550,8 @@ requirements.txt                     Python dependencies (collection, GUI, analy
 DualIMU_Goniometer.stl               3-D printable board case (base + lid)
 analysis/static_test/                stationary test scripts, figures, report (.docx) and FINDINGS.md
 analysis/diagnostics/parse_diag.py   diag log (# CDIAG / # PDIAG lines) -> CSVs + per-minute summary
-docs/SOP_Build_and_Use.docx          SOP: build, set up and run the device (Word master; .md mirror)
-docs/Project_Handover.md             handover: state and next steps, design decisions, research directions (+ .docx)
-docs/build_docs.sh                   regenerates Project_Handover.docx from its Markdown (pandoc)
-docs/images/                         figures for the SOP mirror (sop/) and the handover document (handover/, SVG sources)
+docs/SOP_Build_and_Use.md            SOP: build, set up and run the device
+docs/Project_Handover.md             handover: state and next steps, design decisions, research directions
+docs/images/                         figures for the SOP (sop/) and the handover document (handover/, SVG sources)
 .github/workflows/release.yml        builds and releases KneeGoniometerGUI.exe on a v* tag
 ```
