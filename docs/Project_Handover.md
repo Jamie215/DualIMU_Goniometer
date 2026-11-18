@@ -26,7 +26,7 @@ Companion documents (the SOP, the README and the test report) are listed in
 
 | If you want to… | Start with |
 |---|---|
-| Run a data-collection session | The SOP (`docs/SOP_Build_and_Use.docx`) |
+| Run a data-collection session | The SOP (`docs/SOP_Build_and_Use.md`) |
 | Change the GUI or the firmware | `README.md`, then §4–§6 of this document |
 | Plan the next stage of research | §1.3, §9, §10 and Appendices A–D |
 | Understand why it works the way it does | §2–§8 |
@@ -47,7 +47,7 @@ Companion documents (the SOP, the README and the test report) are listed in
 - **Preliminary stationary testing done.** ≈0.01–0.02° noise, ≈ −0.001 °/min
   drift on healthy hardware; 45°/90° rigs read 45.0°/89.0° (preliminary; §9).
 - **Standard Operating Procedure (SOP) developed**
-  (`docs/SOP_Build_and_Use.docx`): build, setup, sessions and troubleshooting
+  (`docs/SOP_Build_and_Use.md`): build, setup, sessions and troubleshooting
   for operators; Python setup and releasing a new GUI version are in its
   appendices.
 
@@ -85,8 +85,8 @@ Companion documents (the SOP, the README and the test report) are listed in
 
 | Document | Use it for |
 |---|---|
-| `docs/SOP_Build_and_Use.docx` (master; `.md` mirror) | Building the device and running a session |
-| `docs/Project_Handover.md` (+ `.docx`) | This document: state, design rationale, future directions |
+| `docs/SOP_Build_and_Use.md` | Building the device and running a session |
+| `docs/Project_Handover.md` | This document: state, design rationale, future directions |
 | `analysis/static_test/Static_Stability_Test_Report.docx` | Preliminary Stationary Test Report |
 | `analysis/static_test/FINDINGS.md` | Detailed working record behind the report |
 | `README.md` | Technical reference: math, wire protocol, commands |
@@ -102,13 +102,10 @@ Companion documents (the SOP, the README and the test report) are listed in
 | `analysis/static_test/` | Stationary Test Report, its figures, and the analysis scripts behind them (reusable for future stationary tests) |
 | `analysis/diagnostics/parse_diag.py` | Diagnostic log → tables |
 | `docs/` | SOP, this document, and its figures (`docs/images/handover/`) |
-| `docs/build_docs.sh` | Regenerates this document's `.docx` from its Markdown |
 | `.github/workflows/release.yml` | Builds `KneeGoniometerGUI.exe` on a `v*` tag |
 
-**Editing this document.** `docs/Project_Handover.md` is the master copy; the
-Word file is generated from it with `bash docs/build_docs.sh`, so edits made
-only in Word are lost at the next rebuild. The SOP is the other way round: its
-Word file is the master and the `.md` is a mirror.
+**Editing this document.** The Markdown files in `docs/` are the only copies
+of this document and the SOP; edit them directly.
 
 ## 1.5 Handover logistics
 
